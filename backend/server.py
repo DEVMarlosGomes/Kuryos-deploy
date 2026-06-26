@@ -2216,6 +2216,7 @@ else:
 
 # Mount static files for uploads
 from pathlib import Path as PathLib
-upload_dir = PathLib("/app/uploads")
+_default_upload_dir = PathLib(__file__).parent / "uploads"
+upload_dir = PathLib(os.environ.get("UPLOAD_DIR", str(_default_upload_dir)))
 upload_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
