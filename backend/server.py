@@ -1907,7 +1907,8 @@ async def seed_admin():
         seeded_credentials.append((email, role_password, role, name))
 
     # Write credentials
-    Path("/app/memory").mkdir(exist_ok=True)
+    _memory_dir = Path(os.environ.get("MEMORY_DIR", str(Path(__file__).parent / "memory")))
+    _memory_dir.mkdir(exist_ok=True)
     creds_md = ["# Test Credentials\n", "All users belong to the same tenant (Kuryos Demo).\n"]
     creds_md.append("## Login Endpoint\nPOST /api/auth/login  →  body: { email, password }\n")
     creds_md.append("## Users (one per RBAC profile, Section 10 PRD)\n")
@@ -1923,7 +1924,7 @@ async def seed_admin():
     creds_md.append("- POST /api/auth/logout")
     creds_md.append("- POST /api/auth/refresh")
     creds_md.append("")
-    with open("/app/memory/test_credentials.md", "w", encoding="utf-8") as f:
+    with open(_memory_dir / "test_credentials.md", "w", encoding="utf-8") as f:
         f.write("\n".join(creds_md))
 
 # ============ STARTUP ============
