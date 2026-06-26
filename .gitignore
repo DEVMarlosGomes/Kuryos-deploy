@@ -1,0 +1,85 @@
+# ── IDE / Editors ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.emergent/
+
+# ── Git config pessoal ─────────────────────────────────────────────────────────
+.gitconfig
+
+# ── Node / Frontend ────────────────────────────────────────────────────────────
+node_modules/
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# ── Builds ─────────────────────────────────────────────────────────────────────
+/build
+/out
+dist/
+/.next/
+next-env.d.ts
+*.tsbuildinfo
+.cache/
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+
+# ── Testes — artefatos gerados ─────────────────────────────────────────────────
+.pytest_cache/
+/coverage
+*_results.json
+*_REPORT.md
+test_result.md
+test_token.txt
+
+# ── Ambiente / Secrets ─────────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+credentials.json
+*credentials.json*
+*token.json*
+*.pem
+*.key
+.credentials
+.vercel
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dump.rdb
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Archives / Binaries ────────────────────────────────────────────────────────
+**/*.zip
+**/*.tar.gz
+**/*.tar
+**/*.tgz
+*.pack
+*.deb
+*.dylib
+
+# ── Projeto-específico ─────────────────────────────────────────────────────────
+memory/
+uploads/
+Kuryos-deploy/
+.chainlit
+chainlit.md
+.ipynb_checkpoints/
+.ac
+agenthub/agents/youtube/db
