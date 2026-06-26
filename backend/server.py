@@ -166,9 +166,13 @@ async def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+_IS_PRODUCTION = bool(os.environ.get("RENDER") or os.environ.get("ENVIRONMENT") == "production")
+_COOKIE_SECURE = _IS_PRODUCTION
+_COOKIE_SAMESITE = "none" if _IS_PRODUCTION else "lax"
+
 def set_auth_cookies(response: Response, access: str, refresh: str):
-    response.set_cookie(key="access_token", value=access, httponly=True, secure=False, samesite="lax", max_age=43200, path="/")
-    response.set_cookie(key="refresh_token", value=refresh, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    response.set_cookie(key="access_token", value=access, httponly=True, secure=_COOKIE_SECURE, samesite=_COOKIE_SAMESITE, max_age=43200, path="/")
+    response.set_cookie(key="refresh_token", value=refresh, httponly=True, secure=_COOKIE_SECURE, samesite=_COOKIE_SAMESITE, max_age=604800, path="/")
 
 
 async def get_commercial_user(request: Request) -> dict:
