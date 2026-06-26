@@ -350,6 +350,10 @@ class InviteInput(BaseModel):
 class RoleUpdate(BaseModel):
     role: str
 
+class UserPatch(BaseModel):
+    name: Optional[str] = None
+    new_password: Optional[str] = None
+
 # ============ AUTH ROUTES ============
 
 @router.post("/auth/register")
@@ -1208,6 +1212,28 @@ async def update_user_role(user_id: str, data: RoleUpdate, request: Request):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
     return {"message": "Role atualizada", "user_id": user_id, "role": data.role}
+
+@router.patch("/users/{user_id}")
+async def update_user(user_id: str, data: UserPatch, request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Somente admins podem editar usuarios")
+    patch: dict = {}
+    if data.name:
+        patch["name"] = data.name.strip()
+    if data.new_password:
+        if len(data.new_password) < 6:
+            raise HTTPException(status_code=400, detail="Senha deve ter no minimo 6 caracteres")
+        patch["password_hash"] = hash_password(data.new_password)
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    result = await db.users.update_one(
+        {"id": user_id, "tenant_id": user["tenant_id"]},
+        {"$set": patch}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    return {"message": "Usuario atualizado", "user_id": user_id}
 
 @router.delete("/users/{user_id}")
 async def remove_user(user_id: str, request: Request):

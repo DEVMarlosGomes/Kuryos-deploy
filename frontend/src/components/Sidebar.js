@@ -248,12 +248,18 @@ export default function Sidebar() {
     const sidebarContent = (
         <>
             <div className="p-5 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                    <h2 className="font-heading font-semibold text-lg tracking-tight" data-testid="sidebar-logo">
-                        Kuryos
-                    </h2>
-                    <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                        {user?.name} <span className="opacity-70">· {user?.role}</span>
+                <div className="min-w-0" data-testid="sidebar-logo">
+                    <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-md bg-[#0f2044] flex items-center justify-center flex-shrink-0">
+                            <span className="text-white font-bold text-sm font-heading">K</span>
+                        </div>
+                        <div>
+                            <h2 className="font-heading font-bold text-sm tracking-widest uppercase text-foreground leading-none">Kuryos</h2>
+                            <p className="text-[9px] text-muted-foreground tracking-widest uppercase leading-none mt-0.5">ERP</p>
+                        </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2 truncate">
+                        {user?.name} <span className="opacity-60">· {user?.role}</span>
                     </p>
                 </div>
                 <button
@@ -370,7 +376,12 @@ export default function Sidebar() {
                 >
                     <Menu className="h-5 w-5" />
                 </button>
-                <h2 className="font-heading font-semibold text-base tracking-tight">Kuryos</h2>
+                <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-md bg-[#0f2044] flex items-center justify-center">
+                        <span className="text-white font-bold text-xs">K</span>
+                    </div>
+                    <span className="font-heading font-bold text-sm tracking-widest uppercase">Kuryos</span>
+                </div>
                 <div className="w-9" />
             </div>
 
