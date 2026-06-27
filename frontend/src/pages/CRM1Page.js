@@ -281,9 +281,6 @@ export default function CRM1Page() {
     }), [user]);
     const isNewClientValid = Boolean(
         newClient.nome_empresa.trim()
-        && newClient.cnpj.trim()
-        && newClient.contato_principal.nome.trim()
-        && newClient.contato_principal.whatsapp.trim()
         && newClient.canal_origem
         && newClient.categoria_interesse.length
         && newClient.temperatura_lead
@@ -717,7 +714,7 @@ export default function CRM1Page() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>CNPJ *</Label>
+                                    <Label>CNPJ <span className="text-xs text-muted-foreground font-normal">(opcional)</span></Label>
                                     <Input
                                         value={newClient.cnpj}
                                         onChange={(e) => setNewClient({ ...newClient, cnpj: e.target.value })}
@@ -752,10 +749,13 @@ export default function CRM1Page() {
                             </div>
 
                             <div className="space-y-3">
-                                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Contato Principal</h4>
+                                <div>
+                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Contato Principal</h4>
+                                    <p className="text-[11px] text-muted-foreground mt-0.5">Pode ser preenchido na etapa de qualificação</p>
+                                </div>
                                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div className="space-y-2">
-                                        <Label>Nome *</Label>
+                                        <Label>Nome <span className="text-xs text-muted-foreground font-normal">(opcional)</span></Label>
                                         <Input placeholder="Nome do contato" value={newClient.contato_principal.nome} onChange={(e) => updateMainContact("nome", e.target.value)} />
                                     </div>
                                     <div className="space-y-2">
@@ -772,7 +772,7 @@ export default function CRM1Page() {
                                         )}
                                     </div>
                                     <div className="space-y-2">
-                                        <Label>WhatsApp *</Label>
+                                        <Label>WhatsApp <span className="text-xs text-muted-foreground font-normal">(opcional)</span></Label>
                                         <Input placeholder="+55 com DDD" value={newClient.contato_principal.whatsapp} onChange={(e) => updateMainContact("whatsapp", e.target.value)} />
                                     </div>
                                     <div className="space-y-2">
