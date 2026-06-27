@@ -257,15 +257,11 @@ MP_BLOCKED_STATUSES = {"rejeitada", "suspensa"}
 MP_OK_STATUSES = {"homologada"}
 
 STABILITY_CONDITIONS = [
-    {"code": "ambient", "label": "Ambiente", "temperature": "25C", "humidity": "60% UR", "protected_from_light": False},
-    {"code": "climate_30_75", "label": "Climatizada 30C/75%", "temperature": "30C", "humidity": "75% UR", "protected_from_light": False},
-    {"code": "oven_40", "label": "Estufa 40C", "temperature": "40C", "humidity": "Controlada", "protected_from_light": False},
-    {"code": "oven_45", "label": "Estufa 45C", "temperature": "45C", "humidity": "Controlada", "protected_from_light": False},
-    {"code": "refrigerated_5", "label": "Geladeira 5C", "temperature": "5C", "humidity": "N/A", "protected_from_light": False},
-    {"code": "freezer_minus5", "label": "Freezer -5C", "temperature": "-5C", "humidity": "N/A", "protected_from_light": False},
-    {"code": "light_exposure", "label": "Exposicao a luz", "temperature": "25C", "humidity": "60% UR", "protected_from_light": False},
-    {"code": "dark_storage", "label": "Abrigo de luz", "temperature": "25C", "humidity": "60% UR", "protected_from_light": True},
-    {"code": "freeze_thaw", "label": "Ciclo Freeze/Thaw", "temperature": "-5C <-> 40C", "humidity": "Ciclico", "protected_from_light": False},
+    {"code": "ambient",       "label": "Ambiente",         "temperature": "25°C",        "humidity": "60% UR",  "protected_from_light": False},
+    {"code": "oven_45",       "label": "Estufa 45°C",      "temperature": "45°C",        "humidity": "Controlada", "protected_from_light": False},
+    {"code": "freezer_minus5","label": "Freezer -5°C",     "temperature": "-5°C",        "humidity": "N/A",     "protected_from_light": False},
+    {"code": "light_exposure","label": "Exposição a Luz",  "temperature": "25°C",        "humidity": "60% UR",  "protected_from_light": False},
+    {"code": "freeze_thaw",   "label": "Ciclo Freeze/Thaw","temperature": "-5°C ↔ 40°C", "humidity": "Cíclico", "protected_from_light": False, "checkpoints": [1, 2, 7, 15]},
 ]
 
 STABILITY_PARAMETERS = [
@@ -283,7 +279,7 @@ STABILITY_PARAMETERS = [
     {"code": "mass_variation", "label": "Variacao de massa"},
 ]
 
-STABILITY_CHECKPOINTS = [0, 7, 15, 30, 45, 60, 90]
+STABILITY_CHECKPOINTS = [1, 2, 7, 30, 60, 90]  # D24h, D48h, D7, D30, D60, D90
 STABILITY_OPEN_STATUSES = {"ativo", "em_revisao"}
 
 
@@ -317,14 +313,15 @@ def _iso_after_days(base_iso: str, days: int) -> str:
 def _build_stability_conditions(started_at: str) -> List[Dict[str, Any]]:
     conditions = []
     for condition in STABILITY_CONDITIONS:
+        cps = list(condition.get("checkpoints") or STABILITY_CHECKPOINTS)
         conditions.append({
             **condition,
-            "checkpoints": list(STABILITY_CHECKPOINTS),
+            "checkpoints": cps,
             "completed_day_offsets": [],
-            "next_due_day_offset": STABILITY_CHECKPOINTS[0],
-            "next_due_at": _iso_after_days(started_at, STABILITY_CHECKPOINTS[0]),
+            "next_due_day_offset": cps[0],
+            "next_due_at": _iso_after_days(started_at, cps[0]),
             "last_reading_at": None,
-            "status": "pending_d0",
+            "status": "pending",
         })
     return conditions
 
@@ -342,7 +339,7 @@ def _normalize_stability_parameters(parameters: Dict[str, Any]) -> Dict[str, Any
 def _summarize_stability_conditions(study: Dict[str, Any]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     condition_summaries: List[Dict[str, Any]] = []
-    counts = {"pending_d0": 0, "due_soon": 0, "overdue": 0, "completed": 0, "on_track": 0}
+    counts = {"pending": 0, "due_soon": 0, "overdue": 0, "completed": 0, "on_track": 0}
 
     for condition in study.get("conditions", []):
         next_due_at = _parse_iso_datetime(condition.get("next_due_at"))
@@ -350,14 +347,14 @@ def _summarize_stability_conditions(study: Dict[str, Any]) -> Dict[str, Any]:
         checkpoints = list(condition.get("checkpoints") or [])
         if len(completed) >= len(checkpoints):
             status = "completed"
-        elif not study.get("d0_completed"):
-            status = "pending_d0"
         elif next_due_at and next_due_at < now:
             status = "overdue"
         elif next_due_at and next_due_at <= now + timedelta(days=2):
             status = "due_soon"
-        else:
+        elif completed:
             status = "on_track"
+        else:
+            status = "pending"
 
         counts[status] += 1
         condition_summaries.append({
@@ -367,8 +364,6 @@ def _summarize_stability_conditions(study: Dict[str, Any]) -> Dict[str, Any]:
 
     if counts["overdue"]:
         overall_status = "critico"
-    elif not study.get("d0_completed"):
-        overall_status = "pendente_d0"
     elif counts["due_soon"]:
         overall_status = "atencao"
     elif counts["completed"] == len(condition_summaries) and condition_summaries:
@@ -480,7 +475,7 @@ async def _create_stability_alert_task(
     alert_kind: str,
 ) -> Optional[Dict[str, Any]]:
     next_due_day = condition.get("next_due_day_offset")
-    if next_due_day in (None, 0):
+    if next_due_day is None:
         return None
 
     alert_key = f"{alert_kind}:{condition['code']}:{next_due_day}"
@@ -541,7 +536,7 @@ async def check_stability_alerts_for_tenant(tenant_id: str) -> int:
         refreshed = _summarize_stability_conditions(study)
         for condition in refreshed["conditions"]:
             next_due_at = _parse_iso_datetime(condition.get("next_due_at"))
-            if not next_due_at or condition.get("next_due_day_offset") in (None, 0):
+            if not next_due_at or condition.get("next_due_day_offset") is None:
                 continue
             if next_due_at <= now:
                 task = await _create_stability_alert_task(study=study, condition=condition, alert_kind="overdue")
@@ -2255,9 +2250,6 @@ async def create_stability_reading(study_id: str, data: StabilityReadingCreate, 
     if not parameters:
         raise HTTPException(status_code=400, detail="Informe ao menos um parametro valido da leitura")
 
-    if data.day_offset != 0 and not study.get("d0_completed"):
-        raise HTTPException(status_code=400, detail="D0 obrigatorio antes de registrar leituras posteriores")
-
     existing = await db.pd_stability_readings.find_one(
         {
             "study_id": study_id,
@@ -2313,7 +2305,6 @@ async def create_stability_reading(study_id: str, data: StabilityReadingCreate, 
         {
             "$set": {
                 "conditions": updated_conditions,
-                "d0_completed": study.get("d0_completed") or data.day_offset == 0,
                 "updated_at": now_iso(),
             }
         },

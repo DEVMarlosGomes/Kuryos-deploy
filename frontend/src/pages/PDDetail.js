@@ -120,9 +120,6 @@ export default function PDDetail() {
   const [linkingCRM, setLinkingCRM] = useState(false);
   const [selectedCRMProject, setSelectedCRMProject] = useState(null);
 
-  // R13: condições sem D0 registrado (bloqueia "Liberar para aprovação")
-  const [d0Missing, setD0Missing] = useState([]);
-
   const fetchData = useCallback(async () => {
     try {
       const res = await api.get(`/pd/requests/${id}/full`);
@@ -136,23 +133,6 @@ export default function PDDetail() {
   }, [id, navigate]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-
-  // R13: carrega quais condições têm D0 registrado; roda sempre que status é IN_TESTS
-  const loadD0Check = useCallback(async () => {
-    try {
-      const { data: sd } = await api.get(`/pd/requests/${id}/stability-study`);
-      const readings = sd.readings || [];
-      const conditions = sd.constants?.conditions || [];
-      const missing = conditions.filter(
-        c => !readings.some(r => r.condition_code === c.code && r.day_offset === 0)
-      );
-      setD0Missing(missing);
-    } catch { /* silencioso */ }
-  }, [id]);
-
-  useEffect(() => {
-    if (data?.request?.status === "IN_TESTS") loadD0Check();
-  }, [data?.request?.status, loadD0Check]);
 
   const searchCRMProjects = useCallback(async (q) => {
     if (!q || q.length < 2) { setCrmProjects([]); return; }
@@ -340,17 +320,7 @@ export default function PDDetail() {
                 const isEntrega = req.status === "IN_TESTS" && ns === "WAITING_APPROVAL";
                 const label = isEntrega ? "Entregar ao Comercial" : STATUS_CONFIG[ns]?.label;
                 const Icon = ns === "REJECTED" ? XCircle : isEntrega ? Send : ArrowRight;
-                const hasD0Missing = isEntrega && d0Missing.length > 0;
-                const handleClick = () => {
-                  if (hasD0Missing) {
-                    const lista = d0Missing.map(c => `• ${c.label}`).join("\n");
-                    const ok = window.confirm(
-                      `As seguintes condições de estabilidade ainda não têm leitura D0 registrada:\n${lista}\n\nDeseja entregar ao Comercial mesmo assim?`
-                    );
-                    if (!ok) return;
-                  }
-                  handleStatusChange(ns);
-                };
+                const handleClick = () => handleStatusChange(ns);
                 return (
                   <Button key={ns} size="sm"
                     variant={ns === "REJECTED" ? "destructive" : "default"}
@@ -2725,6 +2695,8 @@ const CONDITION_COLORS = {
   freeze_thaw: "text-cyan-500",
 };
 
+const fmtDay = (d) => d === 1 ? "D24h" : d === 2 ? "D48h" : `D${d}`;
+
 // R12: painel compartilhado — mesma fonte de dados para Testes e Estabilidades
 function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader = true }) {
   const [study, setStudy] = useState(null);
@@ -2765,8 +2737,9 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
   const openReadingDialog = (cond) => {
     const existing = readingsByCondition[cond.code] || {};
     const completed = Object.keys(existing).map(Number);
-    const pending = constants.checkpoints.filter(d => !completed.includes(d));
-    const nextDay = pending[0] ?? 0;
+    const condCps = study?.conditions?.find(c => c.code === cond.code)?.checkpoints ?? cond.checkpoints ?? constants.checkpoints;
+    const pending = condCps.filter(d => !completed.includes(d));
+    const nextDay = pending[0] ?? condCps[0] ?? 1;
     setReadingForm({ day_offset: nextDay, parameters: {}, notes: "" });
     setReadingDialog(cond);
   };
@@ -2782,7 +2755,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
         parameters: readingForm.parameters,
         notes: readingForm.notes,
       });
-      toast.success(`Leitura D${readingForm.day_offset} registrada!`);
+      toast.success(`Leitura ${fmtDay(readingForm.day_offset)} registrada!`);
       setReadingDialog(null);
       fetchStudy();
     } catch (err) {
@@ -2816,7 +2789,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
             </h3>
             <p className="text-xs text-muted-foreground mt-0.5">
               Iniciado: {study.started_at ? new Date(study.started_at).toLocaleDateString("pt-BR") : "—"}
-              &nbsp;·&nbsp;Checkpoints: D{constants.checkpoints.join(" / D")}
+              &nbsp;·&nbsp;Checkpoints: {constants.checkpoints.map(fmtDay).join(" / ")}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -2836,19 +2809,20 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
           const CIcon = CONDITION_ICONS[cond.code] || Thermometer;
           const colorCls = CONDITION_COLORS[cond.code] || "text-muted-foreground";
           const existing = readingsByCondition[cond.code] || {};
+          const studyCond = study?.conditions?.find(c => c.code === cond.code);
+          const condCheckpoints = studyCond?.checkpoints ?? cond.checkpoints ?? constants.checkpoints;
           const completedDays = Object.keys(existing).map(Number).sort((a, b) => a - b);
-          const total = constants.checkpoints.length;
+          const total = condCheckpoints.length;
           const done = completedDays.length;
           const progress = total > 0 ? (done / total) * 100 : 0;
           const status = getOverallStatus(cond);
           const alertD2 = isAlertD2(cond);
-          const studyCond = study?.conditions?.find(c => c.code === cond.code);
           const nextDue = studyCond?.next_due_day_offset;
           return (
             <Card key={cond.code} className={`relative ${alertD2 ? "border-amber-400 shadow-amber-100" : ""}`} data-testid={`condition-${cond.code}`}>
               {alertD2 && (
                 <div className="absolute top-2 right-2">
-                  <Badge className="text-[10px] bg-amber-500 text-white animate-pulse">D-2</Badge>
+                  <Badge className="text-[10px] bg-amber-500 text-white animate-pulse">D+2</Badge>
                 </div>
               )}
               <CardContent className="p-4 space-y-3">
@@ -2863,7 +2837,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
                 <div>
                   <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
                     <span>{done}/{total} checkpoints</span>
-                    {nextDue != null && <span className="text-blue-600">Próx: D{nextDue}</span>}
+                    {nextDue != null && <span className="text-blue-600">Próx: {fmtDay(nextDue)}</span>}
                   </div>
                   <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                     <div className="h-full bg-primary transition-all rounded-full" style={{ width: `${progress}%` }} />
@@ -2871,7 +2845,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
                 </div>
                 {/* Checkpoints chips */}
                 <div className="flex flex-wrap gap-1">
-                  {constants.checkpoints.map(day => {
+                  {condCheckpoints.map(day => {
                     const reading = existing[day];
                     return (
                       <span
@@ -2879,9 +2853,9 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
                         className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-medium border ${
                           reading ? "bg-green-50 border-green-300 text-green-700" : "bg-muted border-border text-muted-foreground"
                         }`}
-                        title={reading ? `Registrado em ${new Date(reading.reading_at).toLocaleDateString("pt-BR")}` : `D${day} pendente`}
+                        title={reading ? `Registrado em ${new Date(reading.reading_at).toLocaleDateString("pt-BR")}` : `${fmtDay(day)} pendente`}
                       >
-                        D{day}{reading ? " ✓" : ""}
+                        {fmtDay(day)}{reading ? " ✓" : ""}
                       </span>
                     );
                   })}
@@ -2918,11 +2892,11 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {constants.checkpoints.map(d => {
+                    {(study?.conditions?.find(c => c.code === readingDialog.code)?.checkpoints ?? readingDialog.checkpoints ?? constants.checkpoints).map(d => {
                       const alreadyDone = !!(readingsByCondition[readingDialog.code] || {})[d];
                       return (
                         <SelectItem key={d} value={String(d)} disabled={alreadyDone}>
-                          D{d} {alreadyDone ? "(já registrado)" : ""}
+                          {fmtDay(d)} {alreadyDone ? "(já registrado)" : ""}
                         </SelectItem>
                       );
                     })}
@@ -2952,7 +2926,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
               <Button variant="outline" onClick={() => setReadingDialog(null)}>Cancelar</Button>
               <Button onClick={submitReading} disabled={savingReading} data-testid="submit-reading-btn">
                 {savingReading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
-                Salvar Leitura D{readingForm.day_offset}
+                Salvar Leitura {fmtDay(readingForm.day_offset)}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -3619,7 +3593,7 @@ function TestsTab({ devId, labResults, onRefresh, canEdit, reqId }) {
       )}
 
       <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold">Registros Complementares</h3>
+        <h3 className="text-base font-semibold">Características Padrão</h3>
         {hasData && labResults?.updated_by_name && (
           <span className="text-[11px] text-muted-foreground">
             Última atualização: {labResults.updated_by_name} • {new Date(labResults.updated_at).toLocaleString("pt-BR")}
