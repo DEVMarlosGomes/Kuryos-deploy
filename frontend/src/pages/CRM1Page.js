@@ -177,6 +177,30 @@ function flattenUniqueOptions(groups = {}, flatOptions = []) {
     return Array.from(new Set([...(groupedValues || []), ...(flatOptions || [])])).filter(Boolean);
 }
 
+const fmtPriceDisplay = (v) => {
+    if (v === "" || v == null) return "";
+    const n = parseFloat(String(v).replace(/\./g, "").replace(",", "."));
+    if (isNaN(n)) return "";
+    return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+const fmtVolumeDisplay = (v) => {
+    if (v === "" || v == null) return "";
+    const n = parseInt(String(v).replace(/\./g, "").replace(/,/g, ""), 10);
+    if (isNaN(n)) return "";
+    return n.toLocaleString("pt-BR");
+};
+
+const parsePriceInput = (str) => {
+    if (!str) return null;
+    return parseFloat(String(str).replace(/\./g, "").replace(",", ".")) || null;
+};
+
+const parseVolumeInput = (str) => {
+    if (!str) return null;
+    return parseInt(String(str).replace(/\./g, "").replace(/,/g, ""), 10) || null;
+};
+
 export default function CRM1Page() {
     const { user } = useAuth();
     const [clients, setClients] = useState([]);
@@ -478,8 +502,8 @@ export default function CRM1Page() {
                 cliente_id: batchClientId,
                 projects: valid.map((project) => ({
                     ...project,
-                    faixa_preco_venda: project.faixa_preco_venda ? parseFloat(project.faixa_preco_venda) : null,
-                    volume_estimado_pedido: project.volume_estimado_pedido ? parseInt(project.volume_estimado_pedido, 10) : null,
+                    faixa_preco_venda: project.faixa_preco_venda ? parsePriceInput(project.faixa_preco_venda) : null,
+                    volume_estimado_pedido: project.volume_estimado_pedido ? parseVolumeInput(project.volume_estimado_pedido) : null,
                 })),
             });
             // Projects created successfully — now try to advance the client stage separately.
@@ -1224,13 +1248,15 @@ export default function CRM1Page() {
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Faixa de preço de venda (R$)</Label>
-                                            <Input type="number" value={proj.faixa_preco_venda}
-                                                onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], faixa_preco_venda: e.target.value }; setBatchProjects(p); }} />
+                                            <Input type="text" inputMode="decimal" placeholder="0,00" value={proj.faixa_preco_venda}
+                                                onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], faixa_preco_venda: e.target.value }; setBatchProjects(p); }}
+                                                onBlur={() => { const fmt = fmtPriceDisplay(proj.faixa_preco_venda); if (fmt !== "" && fmt !== String(proj.faixa_preco_venda)) { const p = [...batchProjects]; p[idx] = { ...p[idx], faixa_preco_venda: fmt }; setBatchProjects(p); } }} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Volume estimado por pedido *</Label>
-                                            <Input type="number" value={proj.volume_estimado_pedido}
-                                                onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], volume_estimado_pedido: e.target.value }; setBatchProjects(p); }} />
+                                            <Input type="text" inputMode="numeric" placeholder="15.000" value={proj.volume_estimado_pedido}
+                                                onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], volume_estimado_pedido: e.target.value }; setBatchProjects(p); }}
+                                                onBlur={() => { const fmt = fmtVolumeDisplay(proj.volume_estimado_pedido); if (fmt !== "" && fmt !== String(proj.volume_estimado_pedido)) { const p = [...batchProjects]; p[idx] = { ...p[idx], volume_estimado_pedido: fmt }; setBatchProjects(p); } }} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Prazo desejado para amostra *</Label>
@@ -1343,6 +1369,7 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
             }
             if (Object.keys(updates).length > 0) {
                 await api.put(`/crm/clients/${data.id}`, updates);
+                setData(prev => ({ ...prev, ...updates }));
                 toast.success("Cliente atualizado!");
             }
             setEditing({});
@@ -1369,7 +1396,7 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                         </Badge>
                         {data.cnpj && <span className="text-xs text-muted-foreground mono-num">{data.cnpj}</span>}
                     </div>
-                    {data.stage !== "cliente_perdido" && (
+                    {stageIndex >= 2 && (
                         <div className="pt-3">
                             <Button variant="outline" size="sm" onClick={() => onCreateProject?.(data)}>
                                 <Plus className="h-4 w-4 mr-2" /> Novo Projeto para este Cliente
