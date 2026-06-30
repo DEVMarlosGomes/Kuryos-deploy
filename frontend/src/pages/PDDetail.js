@@ -2119,6 +2119,25 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
   const [saving, setSaving] = useState(false);
   const [baseItems, setBaseItems] = useState([]);
   const [loadingItems, setLoadingItems] = useState(false);
+  const [catalog, setCatalog] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+
+  useEffect(() => {
+    api.get("/pd/catalog")
+      .then(({ data }) => setCatalog(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    api.get("/compras/fornecedores", { params: { limit: 500 } })
+      .then(({ data }) => setFornecedores(Array.isArray(data?.fornecedores) ? data.fornecedores : []))
+      .catch(() => {});
+  }, []);
+
+  const getFornecedoresForIngredient = (ingredientName) => {
+    const catalogItem = catalog.find(c => c.nome === ingredientName);
+    if (catalogItem?.fornecedores?.length > 0) {
+      return catalogItem.fornecedores.map(f => ({ id: f.nome, razao_social: f.nome, nome_fantasia: "" }));
+    }
+    return fornecedores;
+  };
 
   useEffect(() => {
     if (!form.formula_base_id) return;
@@ -2244,23 +2263,49 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
               {v.overrides.length === 0 && (
                 <p className="text-xs text-muted-foreground italic py-1">Sem substituições — todos os ingredientes seguem a fórmula base.</p>
               )}
-              {v.overrides.map((o, oIdx) => (
-                <div key={oIdx} className="grid grid-cols-[1fr_auto_1fr_auto_80px_auto] gap-1.5 items-center">
-                  <Select value={o.ingredient_name_base} onValueChange={val => updateOverride(vIdx, oIdx, "ingredient_name_base", val)}>
-                    <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Substituir..." /></SelectTrigger>
-                    <SelectContent>
-                      {baseItems.map(it => <SelectItem key={it.id} value={it.ingredient_name}>{it.ingredient_name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                  <Input value={o.ingredient_name} onChange={e => updateOverride(vIdx, oIdx, "ingredient_name", e.target.value)} placeholder="Novo ingrediente" className="h-7 text-xs" />
-                  <span className="text-xs text-muted-foreground">%</span>
-                  <Input type="number" step="0.001" value={o.percentage} onChange={e => updateOverride(vIdx, oIdx, "percentage", parseFloat(e.target.value) || 0)} className="h-7 text-xs" />
-                  <button onClick={() => removeOverride(vIdx, oIdx)} className="text-muted-foreground hover:text-red-500 transition-colors">
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
+              {v.overrides.map((o, oIdx) => {
+                const filteredFornecedores = getFornecedoresForIngredient(o.ingredient_name);
+                return (
+                  <div key={oIdx} className="border border-border rounded-md p-2 space-y-1.5 bg-background">
+                    <div className="flex items-center gap-1.5">
+                      <Select value={o.ingredient_name_base} onValueChange={val => updateOverride(vIdx, oIdx, "ingredient_name_base", val)}>
+                        <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Substituir..." /></SelectTrigger>
+                        <SelectContent>
+                          {baseItems.map(it => <SelectItem key={it.id} value={it.ingredient_name}>{it.ingredient_name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                      {catalog.length > 0 ? (
+                        <Select value={o.ingredient_name} onValueChange={val => {
+                          const v2 = [...form.variantes];
+                          v2[vIdx] = { ...v2[vIdx], overrides: v2[vIdx].overrides.map((ov, i) => i === oIdx ? { ...ov, ingredient_name: val, fornecedor: "" } : ov) };
+                          setForm(f => ({ ...f, variantes: v2 }));
+                        }}>
+                          <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="MP substituta..." /></SelectTrigger>
+                          <SelectContent>
+                            {catalog.map(it => <SelectItem key={it.id} value={it.nome}>{it.nome}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input value={o.ingredient_name} onChange={e => updateOverride(vIdx, oIdx, "ingredient_name", e.target.value)} placeholder="Novo ingrediente" className="h-7 text-xs flex-1" />
+                      )}
+                      <button onClick={() => removeOverride(vIdx, oIdx)} className="text-muted-foreground hover:text-red-500 transition-colors flex-shrink-0">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Select value={o.fornecedor} onValueChange={val => updateOverride(vIdx, oIdx, "fornecedor", val)}>
+                        <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Fornecedor..." /></SelectTrigger>
+                        <SelectContent>
+                          {filteredFornecedores.map(f => <SelectItem key={f.id} value={f.razao_social}>{f.razao_social}{f.nome_fantasia ? ` (${f.nome_fantasia})` : ""}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">%</span>
+                      <Input type="number" step="0.001" value={o.percentage} onChange={e => updateOverride(vIdx, oIdx, "percentage", parseFloat(e.target.value) || 0)} className="h-7 text-xs w-[80px] flex-shrink-0" />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="space-y-1">

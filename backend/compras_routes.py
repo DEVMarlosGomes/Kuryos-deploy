@@ -409,7 +409,7 @@ STATUS_DEMANDA     = {"pendente", "em_cotacao", "po_emitida", "cancelada"}
 _CMP_FULL   = {"admin", "compras"}
 _CMP_CQ     = {"admin", "qa", "lider_pd", "compras"}
 _CMP_WRITE  = {"admin", "compras", "engenharia_produto"}
-_CMP_READ   = {"admin", "compras", "engenharia_produto", "lider_pd", "qa", "sales_ops"}
+_CMP_READ   = {"admin", "compras", "engenharia_produto", "lider_pd", "qa", "sales_ops", "formulador"}
 
 
 async def create_compras_indexes():

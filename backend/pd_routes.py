@@ -1295,6 +1295,35 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
             {"$set": {"locked": True, "locked_at": now_iso(), "locked_by": user["id"], "locked_by_name": user.get("name", "")}}
         )
 
+    # RN-PD-STAB: D48h checkpoint required before delivering to Comercial
+    if new_status == "WAITING_APPROVAL":
+        _stab_card = await db.pd_cards.find_one(
+            {"pd_request_id": req_id, "tenant_id": user["tenant_id"]},
+            {"_id": 0, "id": 1}
+        )
+        # Also check via linked_pd_card_id if the card wasn't found by pd_request_id
+        if not _stab_card and pd_req.get("linked_pd_card_id"):
+            _stab_card = {"id": pd_req["linked_pd_card_id"]}
+        if _stab_card:
+            _stab_study = await db.pd_stability_studies.find_one(
+                {"tenant_id": user["tenant_id"], "pd_card_id": _stab_card["id"]},
+                {"_id": 0, "conditions": 1}
+            )
+            if not _stab_study:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Estudo de estabilidade não iniciado. Registre ao menos o D48h em qualquer condição de estabilidade antes de entregar ao Comercial."
+                )
+            has_d48h = any(
+                2 in (cond.get("completed_day_offsets") or [])
+                for cond in _stab_study.get("conditions", [])
+            )
+            if not has_d48h:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Nenhuma leitura D48h (48 horas) registrada. Conclua o checkpoint D48h em ao menos uma condição de estabilidade antes de entregar ao Comercial."
+                )
+
     # Check blocking workflow tasks
     if new_status not in ("IN_PROGRESS", "REJECTED"):
         blocking = await get_blocking_tasks(
@@ -1382,10 +1411,16 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
     }
     kanban_status = _PD_STATUS_TO_KANBAN.get(new_status)
     if kanban_status:
-        await db.pd_cards.update_one(
+        _card_result = await db.pd_cards.update_one(
             {"pd_request_id": req_id, "tenant_id": user["tenant_id"]},
             {"$set": {"status_pd": kanban_status, "updated_at": now_iso()}}
         )
+        # Fallback: card created before pd_request_id was linked — find via linked_pd_card_id on the request
+        if _card_result.matched_count == 0 and pd_req.get("linked_pd_card_id"):
+            await db.pd_cards.update_one(
+                {"id": pd_req["linked_pd_card_id"], "tenant_id": user["tenant_id"]},
+                {"$set": {"status_pd": kanban_status, "pd_request_id": req_id, "updated_at": now_iso()}}
+            )
         # Reverse-sync: push the new stage label back into the CRM sample variation
         try:
             pd_card = await db.pd_cards.find_one(
@@ -2397,9 +2432,25 @@ async def update_sample(sample_id: str, data: SampleUpdate, request: Request):
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
     
     if update_fields.get("sent_to_client") == True:
+        # D48h gate: require at least one stability condition with D48h (day_offset=2) completed
+        dev = await db.pd_developments.find_one({"id": existing.get("development_id")}, {"_id": 0, "pd_request_id": 1})
+        if dev and dev.get("pd_request_id"):
+            study = await db.pd_stability_studies.find_one(
+                {"pd_card_id": dev["pd_request_id"], "tenant_id": user["tenant_id"]},
+                {"_id": 0, "conditions": 1},
+            )
+            has_d48h = study and any(
+                2 in (c.get("completed_day_offsets") or [])
+                for c in (study.get("conditions") or [])
+            )
+            if not has_d48h:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Registre ao menos a leitura D48h em uma condição de estabilidade antes de entregar ao Comercial.",
+                )
         update_fields["sent_at"] = now_iso()
         update_fields.setdefault("internal_approved", True)
-    
+
     sent_to_client = bool(update_fields.get("sent_to_client", existing.get("sent_to_client")))
 
     if "client_approved" in update_fields:

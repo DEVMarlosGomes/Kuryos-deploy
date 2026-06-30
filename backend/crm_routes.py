@@ -2791,10 +2791,14 @@ async def _create_pd_card_for_variacao(sample: dict, variacao: dict, user: dict)
     
     await db.pd_cards.insert_one(card)
     
-    # Atualizar variação com o card_id
+    # Atualizar variação com o card_id e status inicial
     await db.crm_samples.update_one(
         {"id": sample["id"], "variacoes.id": variacao["id"]},
-        {"$set": {"variacoes.$.pd_card_id": card_id}}
+        {"$set": {
+            "variacoes.$.pd_card_id": card_id,
+            "variacoes.$.status_pd_raw": "solicitado",
+            "variacoes.$.status_pd_label": "Solicitado",
+        }}
     )
 
     await audit_log(
