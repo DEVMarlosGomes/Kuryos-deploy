@@ -4,6 +4,18 @@ Auditoria e correção dos 26 apontamentos do cliente, feitas em 16 commits atô
 
 **Limitação de ambiente:** este trabalho foi feito sem acesso a um servidor/MongoDB rodando localmente nem às credenciais de um ambiente de staging — não foi possível executar `pytest backend/tests/` de ponta a ponta (os testes existentes são de integração, batem num servidor real via `REACT_APP_BACKEND_URL` e alguns dependem de dados fixos de uma sessão manual anterior). Validações feitas nesta sessão: `python -m py_compile` em todos os arquivos Python tocados (sem erro), checagem de balanceamento de chaves/parênteses em todos os arquivos JS tocados (sem erro), coleta via `pytest --collect-only` do novo arquivo de teste (`test_formula_import.py`, coleta OK). **Recomendação:** rodar `pytest backend/tests/` contra um ambiente de staging antes do deploy em produção, especialmente `test_orders.py`, `test_pd_card_lazy_request.py` e os dois arquivos de teste novos.
 
+## Correções pós-auditoria (2 bugs críticos)
+
+Depois da entrega inicial, foi feita uma auditoria multi-agente (8 ângulos de revisão independentes) sobre todo o diff da sessão. Dois bugs críticos foram encontrados e corrigidos em commits separados:
+
+1. **Gate D48h (B7/B8) nunca encontrava o estudo de estabilidade.** `assert_d48h_stability_ok()` buscava `pd_stability_studies` pelo id real de `pd_cards`, mas o estudo que a aba Testes/Estabilidades realmente cria (`GET /pd/requests/{req_id}/stability-study`) grava `pd_card_id` igual ao **id da requisição**, não ao id do card. Na prática, o gate bloqueava "Entregar ao Comercial" mesmo com leitura D48h registrada, para qualquer requisição vinda de amostra CRM (o caso comum) — regredindo o comportamento que `update_sample` já tinha antes desta rodada de correções. Corrigido buscando diretamente pela chave real (`pd_card_id == pd_request_id`). Arquivo: `backend/pd_routes.py`.
+2. **Pedido Direto (A12) ignorava a moeda do SKU.** `create_direct_order` nunca lia `preco_unitario_currency` do SKU nem recebia moeda do front — um produto precificado em US$ virava um item de pedido em R$ com o mesmo valor numérico. Corrigido: `DirectOrderCreate` ganhou `valor_unitario_currency` (com fallback pra moeda do SKU, depois BRL), e o front (`DirectOrderModal.js`) passou a pré-preencher e enviar essa moeda. Arquivos: `backend/orders_routes.py`, `frontend/src/components/DirectOrderModal.js`.
+
+**Validar item 1:** registrar uma leitura D48h numa requisição vinda de amostra CRM, depois tentar "Entregar ao Comercial" (pelo botão da requisição, pelo botão da amostra, ou arrastando o card no board) — deve permitir a entrega, não bloquear com "Estudo de estabilidade não iniciado".
+**Validar item 2:** criar um Pedido Direto para um SKU cadastrado com preço em USD — o item do pedido deve ficar registrado em USD, não convertido/tratado como BRL.
+
+Os outros 8 achados da auditoria (severidade menor — banner de qualificação desatualizado após salvar, fallback de categoria removido, `origem` do pedido duplicado como string solta, etc.) não foram corrigidos nesta rodada; ficam para avaliação/priorização.
+
 ---
 
 ## BLOCO A — Comercial
