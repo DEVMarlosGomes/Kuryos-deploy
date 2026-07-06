@@ -4150,6 +4150,38 @@ async def list_catalog(request: Request, q: Optional[str] = None, categoria: Opt
     if categoria:
         query["categoria"] = categoria
     items = await db.pd_catalog.find(query, {"_id": 0}).sort("nome", 1).to_list(1000)
+
+    # B4/B5/B14: banco de custos (pd_catalog) e cadastro de materiais/fornecedores
+    # (db.materiais) sao coleções separadas sem ligação nenhuma - ao escolher uma MP no
+    # banco de custos, o usuário não via os fornecedores homologados já cadastrados em
+    # Compras e tinha que redigitar fornecedor/preço na mão. Enriquecemos aqui os
+    # fornecedores homologados de db.materiais (casamento exato por nome, case-insensitive)
+    # como sugestões adicionais — sem alterar o que já está salvo no próprio pd_catalog.
+    names = [it["nome"] for it in items if it.get("nome")]
+    if names:
+        materiais = await db.materiais.find(
+            {"tenant_id": user["tenant_id"], "nome": {"$in": names}},
+            {"_id": 0, "nome": 1, "fornecedores": 1},
+        ).to_list(2000)
+        materiais_by_name = {m["nome"].strip().lower(): m for m in materiais if m.get("nome")}
+        for item in items:
+            material = materiais_by_name.get((item.get("nome") or "").strip().lower())
+            if not material:
+                continue
+            existing_names = {(f.get("nome") or "").strip().lower() for f in (item.get("fornecedores") or [])}
+            homologados = [
+                {
+                    "nome": f.get("fornecedor_nome", ""),
+                    "preco_rs_kg": f.get("preco_por_unidade") if (f.get("moeda") or "BRL") == "BRL" else None,
+                    "moeda": f.get("moeda", "BRL"),
+                    "origem": "materiais_homologados",
+                }
+                for f in (material.get("fornecedores") or [])
+                if f.get("status_homologacao") == "homologado"
+                and (f.get("fornecedor_nome") or "").strip().lower() not in existing_names
+            ]
+            if homologados:
+                item["fornecedores"] = [*(item.get("fornecedores") or []), *homologados]
     return items
 
 @pd_router.get("/catalog/{item_id}")
