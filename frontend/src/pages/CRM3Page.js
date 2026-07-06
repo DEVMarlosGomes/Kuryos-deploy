@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import { formatApiError } from "@/lib/formatError";
+import { indexToLetters } from "@/lib/letters";
 import { CurrencyInput, fmtCurrency } from "@/components/ui/CurrencyInput";
 import { getCurrentBackendUrl, toWebSocketUrl } from "@/lib/backend";
 import { useAuth } from "@/contexts/AuthContext";
@@ -1041,8 +1042,7 @@ export default function CRM3Page() {
                     <div className="flex-1 overflow-y-auto space-y-3 p-1">
                         {newVariacoes.map((v, idx) => {
                             const existingCount = selectedSample?.variacoes?.length || 0;
-                            const intToLetters = (n) => { let r = ''; while (n >= 0) { r = String.fromCharCode(97 + (n % 26)) + r; n = Math.floor(n / 26) - 1; } return r; };
-                            const nextLetter = intToLetters(existingCount + idx);
+                            const nextLetter = indexToLetters(existingCount + idx, "lower");
                             return (
                                 <div key={idx} className="border border-border rounded-lg p-3 space-y-3 bg-muted/20">
                                     <div className="flex items-center justify-between">

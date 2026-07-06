@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "@/lib/api";
 import { formatApiError } from "@/lib/formatError";
+import { indexToLetters } from "@/lib/letters";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -274,7 +275,7 @@ export default function CRM2Page() {
     const generateVariacaoLetters = (count) => {
         const letters = [];
         for (let index = 0; index < count; index += 1) {
-            letters.push(String.fromCharCode(65 + index));
+            letters.push(indexToLetters(index));
         }
         return letters;
     };
