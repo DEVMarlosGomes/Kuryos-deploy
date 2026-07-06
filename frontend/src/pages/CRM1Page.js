@@ -26,6 +26,7 @@ import ListView from "@/components/ListView";
 import { formatApiError } from "@/lib/formatError";
 import { CurrencyInput, fmtCurrency } from "@/components/ui/CurrencyInput";
 import { fmtPriceDisplay, fmtVolumeDisplay, parsePriceInput, parseVolumeInput } from "@/lib/masks";
+import { Cli4Field } from "@/components/Cli4Field";
 
 function CRMSubNav({ active }) {
     const navigate = useNavigate();
@@ -133,6 +134,7 @@ function createEmptyClient(defaultOwner = "") {
         instagram: "",
         observacoes: "",
         cli3: "",
+        cli4: "",
         // Qualificação — pré-preencher para desbloquear avanço automático
         tem_anvisa: "",
         volume_estimado_mensal: "",
@@ -751,6 +753,11 @@ export default function CRM1Page() {
                                     />
                                     <p className="text-[10px] text-muted-foreground">3 letras usadas no código do SKU (ex: CA-ABC-0001). Se vazio, usa as 3 primeiras letras da empresa.</p>
                                 </div>
+                                <Cli4Field
+                                    value={newClient.cli4}
+                                    onChange={(v) => setNewClient({ ...newClient, cli4: v })}
+                                    nomeEmpresa={newClient.nome_empresa}
+                                />
                                 <div className="space-y-2">
                                     <Label>Temperatura <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
                                     <Select value={newClient.temperatura_lead} onValueChange={(v) => setNewClient({ ...newClient, temperatura_lead: v })}>
@@ -1447,6 +1454,12 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                                             <p className="text-[10px] text-amber-600 mt-0.5">Precisa de exatamente 3 letras</p>
                                         )}
                                     </div>
+                                    <Cli4Field
+                                        value={val("cli4") ?? data?.cli4}
+                                        onChange={(v) => setVal("cli4", v)}
+                                        nomeEmpresa={val("nome_empresa") ?? data?.nome_empresa}
+                                        frozen={Boolean(data?.cli4_congelado)}
+                                    />
                                     <div><Label className="text-xs">Contato — Nome</Label><Input value={val("contato_principal")?.nome || data.contato_principal?.nome || ""} onChange={(e) => setVal("contato_principal", { ...(data.contato_principal || {}), ...(editing.contato_principal || {}), nome: e.target.value })} /></div>
                                     <div>
                                         <Label className="text-xs">Contato — Cargo</Label>
