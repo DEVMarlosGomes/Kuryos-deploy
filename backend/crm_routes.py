@@ -2247,6 +2247,10 @@ async def batch_create_samples_v2(data: SampleBatchCreateV2, request: Request):
     if not data.samples:
         raise HTTPException(status_code=400, detail="Nenhuma amostra fornecida")
 
+    for item in data.samples:
+        if item.tipo_amostra == "adaptacao_de_formula" and not clean_text(item.referencia_formula):
+            raise HTTPException(status_code=400, detail=f"referencia_formula é obrigatória para adaptação de fórmula (amostra '{item.nome_produto}')")
+
     # R02: atualizar campos do card antes de criar amostras (sync CRM→P&D)
     if data.projeto_updates:
         _ALLOWED_PROJETO_FIELDS = {

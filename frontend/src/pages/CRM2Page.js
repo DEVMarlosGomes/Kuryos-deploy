@@ -394,6 +394,14 @@ export default function CRM2Page() {
             return;
         }
 
+        const missingReferencia = validSamples.find((sample) => (
+            sample.tipo_amostra === "adaptacao_de_formula" && !String(sample.referencia_formula || "").trim()
+        ));
+        if (missingReferencia) {
+            toast.error(`Referência de fórmula é obrigatória para adaptação de fórmula (amostra "${missingReferencia.nome_produto}").`);
+            return;
+        }
+
         try {
             const projetoUpdates = batchProjetoData ? {
                 categoria: batchProjetoData.categoria,

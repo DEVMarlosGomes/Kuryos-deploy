@@ -349,11 +349,15 @@ export default function SampleBatchModal({
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <Label>Referência de fórmula</Label>
+                                        <Label>
+                                            Referência de fórmula
+                                            {sample.tipo_amostra === "adaptacao_de_formula" && <span className="text-destructive"> *</span>}
+                                        </Label>
                                         <Input
                                             placeholder="Obrigatória em adaptação"
                                             value={sample.referencia_formula || ""}
                                             onChange={(event) => updateSample(sampleIndex, "referencia_formula", event.target.value)}
+                                            className={sample.tipo_amostra === "adaptacao_de_formula" && !String(sample.referencia_formula || "").trim() ? "border-destructive" : ""}
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
