@@ -2516,8 +2516,10 @@ async def _ensure_pd_request_for_card(card: dict, user: dict) -> str:
 
     description = "\n".join(desc_parts).strip()
 
-    # Volume from sample
-    volume_str = ""
+    # Volume from sample — quantidade_por_variacao foi removido da criação de amostras (A9),
+    # mas documentos legados ainda podem trazê-lo. Sem ele, cai num placeholder explícito em
+    # vez de deixar o card do P&D com o campo de volume vazio.
+    volume_str = "A definir"
     if card.get("quantidade_por_variacao"):
         volume_str = f"{card['quantidade_por_variacao']}{card.get('unidade_quantidade', 'g')}"
 

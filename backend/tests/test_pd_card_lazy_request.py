@@ -131,8 +131,10 @@ class TestPDRequestFullClientInfo:
         assert req.get("linked_pd_card_id") == CARD_101A_ID
         assert req.get("internal_code") == "101/A"
         assert req.get("description"), "description should not be empty"
-        # volume_str = quantidade_por_variacao + unidade (e.g. '300g')
-        assert req.get("volume"), "volume should be populated from sample"
+        # A9: quantidade_por_variacao/unidade_quantidade saiu da criação de amostras.
+        # volume vem de quantidade_por_variacao+unidade quando presente (dados legados),
+        # senão cai no placeholder "A definir" — nunca fica vazio.
+        assert req.get("volume"), "volume should be populated (from sample or placeholder)"
 
 
 # ----------- 4 + 5: new variacao auto-creates card+request ----------- #
@@ -197,8 +199,8 @@ class TestNewVariationAutoCreatesPDRequest:
         assert req["linked_pd_card_id"] == match["id"]
         # description should be non-empty (briefing concatenation)
         assert req.get("description"), "description must be populated"
-        # volume should be populated from sample.quantidade_por_variacao
-        assert req.get("volume"), "volume must be populated"
+        # A9: sem quantidade_por_variacao (removida da criação), cai no placeholder "A definir"
+        assert req.get("volume"), "volume must be populated (from sample or placeholder)"
 
         ci = full.get("client_info") or {}
         assert ci.get("_source") == "crm_sample"

@@ -36,7 +36,6 @@ export default function SampleBatchModal({
     const [restricaoInput, setRestricaoInput] = useState("");
 
     const sampleTypes = constants?.sample_tipos || [];
-    const sampleUnits = constants?.sample_unidades || [];
     const variationParams = constants?.sample_parametros_variacao || [];
 
     const updateSample = (index, field, value) => {
@@ -314,32 +313,6 @@ export default function SampleBatchModal({
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                    {sample.parametro_variacao && sample.parametro_variacao !== "" && (
-                                    <div className="space-y-2">
-                                        <Label><FieldHint hint="Quantidade de unidades produzidas para cada variação desta amostra.">Quantidade por variação *</FieldHint></Label>
-                                        <Input
-                                            type="number"
-                                            value={sample.quantidade_por_variacao || ""}
-                                            onChange={(event) => updateSample(sampleIndex, "quantidade_por_variacao", event.target.value)}
-                                        />
-                                    </div>
-                                    )}
-                                    {sample.parametro_variacao && sample.parametro_variacao !== "" && (
-                                    <div className="space-y-2">
-                                        <Label><FieldHint hint="Unidade de medida da quantidade por variação (g = gramas, mL = mililitros, un = unidades).">Unidade</FieldHint></Label>
-                                        <Select
-                                            value={sample.unidade_quantidade || "g"}
-                                            onValueChange={(value) => updateSample(sampleIndex, "unidade_quantidade", value)}
-                                        >
-                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
-                                            <SelectContent>
-                                                {sampleUnits.map((option) => (
-                                                    <SelectItem key={option} value={option}>{option}</SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    )}
                                     <div className="space-y-2">
                                         <Label>Prazo de entrega ao cliente *</Label>
                                         <Input

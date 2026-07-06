@@ -388,7 +388,6 @@ export default function CRM2Page() {
             sample.nome_produto.trim()
             && sample.tipo_amostra
             && sample.prazo_entrega_cliente
-            && (!sample.parametro_variacao || String(sample.quantidade_por_variacao || "").trim())
         ));
         if (!validSamples.length) {
             toast.error("Preencha os campos obrigatórios de pelo menos uma amostra.");
