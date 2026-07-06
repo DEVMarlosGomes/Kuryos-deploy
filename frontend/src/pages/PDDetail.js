@@ -59,7 +59,6 @@ const BACKWARD_TRANSITIONS = {
   APPROVED: "WAITING_APPROVAL",
 };
 
-const TEST_TYPES = ["Estabilidade", "pH", "Viscosidade", "Sensorial", "Compatibilidade"];
 const TEST_STATUS_OPTIONS = ["PENDING", "RUNNING", "APPROVED", "FAILED"];
 const DOC_TYPES = ["Ficha Técnica", "Laudo", "Especificação", "Briefing Cliente", "Outro"];
 
@@ -483,7 +482,6 @@ export default function PDDetail() {
             <TabsTrigger value="formula" className="gap-1.5"><Beaker className="h-3.5 w-3.5" />Manipulação</TabsTrigger>
             <TabsTrigger value="tests" className="gap-1.5"><FlaskConical className="h-3.5 w-3.5" />Testes</TabsTrigger>
             <TabsTrigger value="samples" className="gap-1.5"><Package className="h-3.5 w-3.5" />Amostras</TabsTrigger>
-            <TabsTrigger value="estabilidades" className="gap-1.5"><TestTube className="h-3.5 w-3.5" />Estabilidades</TabsTrigger>
             <TabsTrigger value="ficha_tecnica" className="gap-1.5"><ClipboardList className="h-3.5 w-3.5" />Ficha Técnica</TabsTrigger>
             <TabsTrigger value="updates" className="gap-1.5 relative">
               <Bell className="h-3.5 w-3.5" />Atualizações
@@ -536,12 +534,6 @@ export default function PDDetail() {
               ) : (
                 <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
               )}
-            </ErrorBoundary>
-          </TabsContent>
-
-          <TabsContent value="estabilidades">
-            <ErrorBoundary label="Estabilidades" resetKey={req.id}>
-              <EstabilidadesTab reqId={req.id} req={req} canEdit={canEdit} />
             </ErrorBoundary>
           </TabsContent>
 
@@ -1180,7 +1172,7 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
       {/* ── ESTABILIDADES ────────────────────────────────── */}
       {unlocked("IN_TESTS") ? (
         <div className="border rounded-xl overflow-hidden">
-          <SectionHead accentColor="bg-cyan-500" Icon={TestTube} title="Estabilidades" action={<GoBtn tab="estabilidades" />} />
+          <SectionHead accentColor="bg-cyan-500" Icon={TestTube} title="Estabilidades" action={<GoBtn tab="tests" />} />
           <div className="px-6 py-4">
             <p className="text-sm text-muted-foreground">Registre e acompanhe os estudos de estabilidade da fórmula.</p>
           </div>
@@ -3013,10 +3005,6 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
 }
 
 // R12: wrapper fino — mantém aba "Estabilidades" inalterada externamente
-function EstabilidadesTab({ reqId, req, canEdit }) {
-  return <StabilityGridPanel reqId={reqId} canEdit={canEdit} showStudyHeader />;
-}
-
 /* ============ FICHA TÉCNICA TAB ============ */
 const FT_PARAMS = [
   { key: "aspecto", label: "Aspecto" },
