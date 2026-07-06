@@ -1247,21 +1247,20 @@ async def assert_d48h_stability_ok(pd_request_id: str, tenant_id: str):
     cada caminho tinha sua propria checagem inline com uma estrategia de busca
     diferente, e o caminho do board (crm_routes.move_pd_card) nao tinha checagem
     nenhuma — permitindo pular a estabilidade ao mover o card pelo Kanban (B7).
+
+    BUGFIX pos-auditoria: apesar do nome do campo, `pd_stability_studies.pd_card_id`
+    NAO guarda o id real de `pd_cards` no caminho que os usuarios de fato usam —
+    `_ensure_stability_study_for_pd_card` (chamada por
+    GET /pd/requests/{req_id}/stability-study, o endpoint que a aba Testes/
+    Estabilidades usa para ler e criar o estudo) recebe o proprio `pd_request`
+    como `card` e grava `pd_card_id = pd_request["id"]`. A primeira versao desta
+    funcao resolvia o id real de `pd_cards` e buscava por ele — nunca batia com
+    o estudo de verdade, entao o gate bloqueava toda entrega mesmo com D48h
+    registrado. A chave certa (e a que o antigo check de update_sample usava,
+    corretamente) e o proprio pd_request_id.
     """
-    pd_card = await db.pd_cards.find_one(
-        {"pd_request_id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0, "id": 1}
-    )
-    if not pd_card:
-        pd_req = await db.pd_requests.find_one(
-            {"id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0, "linked_pd_card_id": 1}
-        )
-        if pd_req and pd_req.get("linked_pd_card_id"):
-            pd_card = {"id": pd_req["linked_pd_card_id"]}
-    if not pd_card:
-        # Sem card de pipeline vinculado — nada a checar (ex: requisicoes legadas/avulsas)
-        return
     study = await db.pd_stability_studies.find_one(
-        {"pd_card_id": pd_card["id"], "tenant_id": tenant_id}, {"_id": 0, "conditions": 1}
+        {"pd_card_id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0, "conditions": 1}
     )
     if not study:
         raise HTTPException(
