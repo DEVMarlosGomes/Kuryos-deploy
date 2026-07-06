@@ -126,6 +126,7 @@ class TestOrderCRUD:
         assert data["cliente"]["nome"] == "TEST Client"
         assert data["total_pedido"] == 71.5
         assert data["status"] == "rascunho"
+        assert data["origem"] == "pipeline", "A12: pedidos do fluxo normal devem ter origem=pipeline"
         TestOrderCRUD.created_id = data["id"]
 
     def test_get_created(self, admin):
@@ -204,4 +205,73 @@ class TestFilters:
 
     def test_search_filter(self, admin):
         r = admin.get(f"{BASE_URL}/api/orders?q=05", timeout=15)
+        assert r.status_code == 200
+
+
+# ===== A12: Pedido Direto (cliente + SKU existentes, sem lead->projeto->amostra) =====
+class TestDirectOrder:
+    created_id = None
+
+    def test_unknown_cliente_404(self, admin):
+        r = admin.post(f"{BASE_URL}/api/orders/direct", json={
+            "cliente_id": "does-not-exist-xyz",
+            "sku_id": "does-not-exist-xyz",
+            "qtd": 10,
+        }, timeout=15)
+        assert r.status_code == 404
+
+    def test_unknown_sku_404(self, admin):
+        r = admin.get(f"{BASE_URL}/api/crm/clients", timeout=15)
+        assert r.status_code == 200
+        clientes = r.json()
+        if not clientes:
+            pytest.skip("No client available in this environment")
+        r2 = admin.post(f"{BASE_URL}/api/orders/direct", json={
+            "cliente_id": clientes[0]["id"],
+            "sku_id": "does-not-exist-xyz",
+            "qtd": 10,
+        }, timeout=15)
+        assert r2.status_code == 404
+
+    def test_invalid_qtd_rejected(self, admin):
+        r = admin.get(f"{BASE_URL}/api/crm/skus", params={"status": "ativo"}, timeout=15)
+        assert r.status_code == 200
+        skus = r.json()
+        if not skus:
+            pytest.skip("No active SKU available in this environment to test the happy path")
+        sku = skus[0]
+        r2 = admin.post(f"{BASE_URL}/api/orders/direct", json={
+            "cliente_id": sku["cliente_id"],
+            "sku_id": sku["id"],
+            "qtd": 0,
+        }, timeout=15)
+        assert r2.status_code == 400
+
+    def test_happy_path_creates_order_with_origem_direto(self, admin):
+        r = admin.get(f"{BASE_URL}/api/crm/skus", params={"status": "ativo"}, timeout=15)
+        skus = [s for s in r.json() if (s.get("preco_unitario") or 0) > 0]
+        if not skus:
+            pytest.skip("No active SKU with preco_unitario available in this environment")
+        sku = skus[0]
+        r2 = admin.post(f"{BASE_URL}/api/orders/direct", json={
+            "cliente_id": sku["cliente_id"],
+            "sku_id": sku["id"],
+            "qtd": 5,
+            "prazo_entrega": "15 dias",
+        }, timeout=15)
+        assert r2.status_code == 200, r2.text
+        data = r2.json()
+        assert data["origem"] == "direto"
+        assert data["pd_request_id"] is None
+        assert data["client_card_id"] is None
+        assert len(data["items"]) == 1
+        assert data["items"][0]["codigo_kuryos"] == sku["codigo_interno"]
+        assert data["items"][0]["qtd"] == 5
+        assert data["status"] == "rascunho"
+        TestDirectOrder.created_id = data["id"]
+
+    def test_happy_path_cleanup(self, admin):
+        if not TestDirectOrder.created_id:
+            pytest.skip("Happy path did not run")
+        r = admin.delete(f"{BASE_URL}/api/orders/{TestDirectOrder.created_id}", timeout=15)
         assert r.status_code == 200

@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ClipboardList, Search, Loader2, FileText, ArrowRight, Building2, Calendar, DollarSign, Bell } from "lucide-react";
+import { ClipboardList, Search, Loader2, FileText, ArrowRight, Building2, Calendar, DollarSign, Bell, Plus } from "lucide-react";
+import DirectOrderModal from "@/components/DirectOrderModal";
 
 const STATUS_CONFIG = {
   rascunho: { label: "Rascunho", color: "bg-slate-500/10 text-slate-600 border-slate-300 dark:text-slate-300" },
@@ -52,6 +53,7 @@ export default function OrdersPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [followupFilter, setFollowupFilter] = useState("all");
+  const [showDirectOrder, setShowDirectOrder] = useState(false);
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -93,7 +95,16 @@ export default function OrdersPage() {
               Pedidos comerciais gerados a partir de projetos P&D aprovados
             </p>
           </div>
+          <Button onClick={() => setShowDirectOrder(true)} className="gap-1.5" data-testid="new-direct-order-btn">
+            <Plus className="h-4 w-4" /> Novo Pedido Direto
+          </Button>
         </div>
+
+        <DirectOrderModal
+          open={showDirectOrder}
+          onOpenChange={setShowDirectOrder}
+          onCreated={(order) => { fetchOrders(); navigate(`/orders/${order.id}`); }}
+        />
 
         {/* Mini stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -188,6 +199,12 @@ export default function OrdersPage() {
                             <Badge variant="outline" className="text-[10px] gap-1">
                               <FileText className="h-2.5 w-2.5" />
                               Auto-gerado
+                            </Badge>
+                          )}
+                          {order.origem === "direto" && (
+                            <Badge variant="outline" className="text-[10px] gap-1 border-cyan-300 text-cyan-700">
+                              <Plus className="h-2.5 w-2.5" />
+                              Pedido Direto
                             </Badge>
                           )}
                           {order.reproducao_de && (

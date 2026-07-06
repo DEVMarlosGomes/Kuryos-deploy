@@ -163,6 +163,20 @@ class OrderCreate(BaseModel):
     observacoes: str = ""
 
 
+class DirectOrderCreate(BaseModel):
+    """A12: Pedido Direto — cliente e SKU já existentes, pula lead→projeto→amostra."""
+    cliente_id: str
+    sku_id: str
+    qtd: float
+    valor_unitario: Optional[float] = None    # se omitido, usa o preço cadastrado no SKU
+    prazo_entrega: str = ""
+    tipo_servico: str = "producao"             # producao | reposicao | retrabalho
+    nivel_formalizacao: int = 1                # 1 | 2 | 3
+    frete: FreteData = Field(default_factory=FreteData)
+    condicoes: CondicoesData = Field(default_factory=CondicoesData)
+    observacoes: str = ""
+
+
 class OrderUpdate(BaseModel):
     kickoff_id: Optional[str] = None          # Gap A: allow linking/unlinking kickoff
     numero_pedido: Optional[str] = None
@@ -327,6 +341,29 @@ async def _enrich_from_crm(client_card_id: Optional[str], tenant_id: str) -> Dic
     return cliente
 
 
+async def _enrich_from_crm_client(cliente_id: str, tenant_id: str) -> Dict[str, Any]:
+    """A12: monta ClienteData direto de um crm_clients existente (Pedido Direto não
+    passa por db.cards/lead — o cliente já está fechado)."""
+    cliente = {
+        "nome": "", "razao_social": "", "cnpj": "",
+        "cidade_uf": "", "responsavel": "", "telefone": "", "email": "",
+    }
+    crm_client = await db.crm_clients.find_one({"id": cliente_id, "tenant_id": tenant_id}, {"_id": 0})
+    if not crm_client:
+        return cliente
+    cliente["nome"] = crm_client.get("nome_empresa", "")
+    cliente["razao_social"] = crm_client.get("nome_empresa", "")
+    cliente["cnpj"] = crm_client.get("cnpj", "")
+    cidade = crm_client.get("cidade", "") or crm_client.get("regiao", "")
+    uf = crm_client.get("uf", "") or crm_client.get("estado", "")
+    cliente["cidade_uf"] = f"{cidade}/{uf}" if cidade and uf else (cidade or uf)
+    contato = crm_client.get("contato_principal") or {}
+    cliente["responsavel"] = contato.get("nome", "")
+    cliente["telefone"] = contato.get("whatsapp", "")
+    cliente["email"] = contato.get("email", "")
+    return cliente
+
+
 async def _build_items_from_pd(pd_request_id: str, tenant_id: str) -> List[Dict[str, Any]]:
     """Build initial order items from the PD request + samples + formula"""
     pd_req = await db.pd_requests.find_one({"id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0})
@@ -428,6 +465,7 @@ async def auto_create_order_on_pd_approval(pd_request_id: str, user: Dict[str, A
         "created_by": user["id"],
         "created_by_name": user.get("name", ""),
         "auto_created": True,
+        "origem": "pipeline",
     }
     await db.orders.insert_one(order)
     order.pop("_id", None)
@@ -493,10 +531,12 @@ async def get_reorder_draft(client_card_id: str, request: Request):
     return draft
 
 
-@orders_router.post("")
-async def create_order(data: OrderCreate, request: Request):
+async def _create_order_document(data: OrderCreate, user: Dict[str, Any], *, origem: str = "pipeline") -> Dict[str, Any]:
+    """Corpo comum de criação de pedido — usado tanto pelo fluxo normal (POST /orders,
+    vindo de pd_request/kickoff) quanto pelo Pedido Direto (POST /orders/direct, A12),
+    para garantir que os dois entrem exatamente no mesmo ciclo de vida (checklist,
+    totais, alçada de aprovação comercial, imutabilidade pós-confirmação etc.)."""
     import re
-    user = await get_current_user(request)
 
     if data.tipo_servico not in TIPOS_SERVICO:
         raise HTTPException(status_code=400, detail=f"tipo_servico inválido. Permitidos: {TIPOS_SERVICO}")
@@ -566,10 +606,73 @@ async def create_order(data: OrderCreate, request: Request):
         "created_by": user["id"],
         "created_by_name": user.get("name", ""),
         "auto_created": False,
+        # A12: rastreia pedidos criados sem passar por lead→projeto→amostra
+        "origem": origem,
     }
     await db.orders.insert_one(order)
     order.pop("_id", None)
     return order
+
+
+@orders_router.post("")
+async def create_order(data: OrderCreate, request: Request):
+    user = await get_current_user(request)
+    return await _create_order_document(data, user, origem="pipeline")
+
+
+@orders_router.post("/direct")
+async def create_direct_order(data: DirectOrderCreate, request: Request):
+    """A12: cria pedido direto para cliente+SKU já cadastrados, sem lead→projeto→amostra.
+    Reaproveita _create_order_document — o pedido direto entra no mesmo ciclo de vida
+    (checklist, totais, alçada de aprovação comercial, CGI, imutabilidade) dos demais."""
+    user = await get_current_user(request)
+
+    cliente_doc = await db.crm_clients.find_one({"id": data.cliente_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not cliente_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    sku_doc = await db.skus.find_one({"id": data.sku_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not sku_doc:
+        raise HTTPException(status_code=404, detail="SKU não encontrado")
+    if sku_doc.get("status") != "ativo":
+        raise HTTPException(
+            status_code=400,
+            detail=f"SKU '{sku_doc.get('codigo_interno')}' não está ativo (status: {sku_doc.get('status')}) — não é possível criar pedido direto para um produto descontinuado.",
+        )
+    if sku_doc.get("cliente_id") != data.cliente_id:
+        raise HTTPException(status_code=400, detail="Este SKU não pertence ao cliente selecionado.")
+
+    if data.qtd <= 0:
+        raise HTTPException(status_code=400, detail="Quantidade deve ser maior que zero")
+
+    cliente = await _enrich_from_crm_client(data.cliente_id, user["tenant_id"])
+    valor_unitario = data.valor_unitario if data.valor_unitario is not None else float(sku_doc.get("preco_unitario") or 0.0)
+    if valor_unitario <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="SKU sem preço unitário cadastrado — informe valor_unitario ou cadastre o preço no SKU antes de criar o pedido direto.",
+        )
+
+    item = OrderItem(
+        codigo_kuryos=sku_doc.get("codigo_interno", ""),
+        item=sku_doc.get("nome_produto", ""),
+        prazo_entrega=data.prazo_entrega,
+        valor_unitario=valor_unitario,
+        qtd=data.qtd,
+        valor_total=round(valor_unitario * data.qtd, 2),
+        tipo_servico=data.tipo_servico,
+    )
+
+    order_data = OrderCreate(
+        tipo_servico=data.tipo_servico,
+        nivel_formalizacao=data.nivel_formalizacao,
+        cliente=ClienteData(**cliente),
+        frete=data.frete,
+        items=[item],
+        condicoes=data.condicoes,
+        observacoes=data.observacoes,
+    )
+    return await _create_order_document(order_data, user, origem="direto")
 
 
 @orders_router.put("/{order_id}")
@@ -953,6 +1056,7 @@ async def reproduzir_pedido(order_id: str, data: ReproduzirInput, request: Reque
         "created_by": user["id"],
         "created_by_name": user.get("name", ""),
         "auto_created": False,
+        "origem": "reproducao",
     }
     await db.orders.insert_one(new_order)
     new_order.pop("_id", None)
