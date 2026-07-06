@@ -1238,6 +1238,47 @@ async def delete_pd_request(req_id: str, request: Request):
 
 # ============ STATUS TRANSITIONS ============
 
+async def assert_d48h_stability_ok(pd_request_id: str, tenant_id: str):
+    """RN-PD-STAB: exige ao menos uma leitura D48h antes de entregar ao Comercial.
+
+    Ponto unico de verdade para o gate — usado pelos 3 caminhos que podem levar
+    uma requisicao/amostra/card a esse estagio (transition_status, update_sample
+    e o drag-and-drop do board via assert_pd_card_ready_for_approval). Antes,
+    cada caminho tinha sua propria checagem inline com uma estrategia de busca
+    diferente, e o caminho do board (crm_routes.move_pd_card) nao tinha checagem
+    nenhuma — permitindo pular a estabilidade ao mover o card pelo Kanban (B7).
+    """
+    pd_card = await db.pd_cards.find_one(
+        {"pd_request_id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0, "id": 1}
+    )
+    if not pd_card:
+        pd_req = await db.pd_requests.find_one(
+            {"id": pd_request_id, "tenant_id": tenant_id}, {"_id": 0, "linked_pd_card_id": 1}
+        )
+        if pd_req and pd_req.get("linked_pd_card_id"):
+            pd_card = {"id": pd_req["linked_pd_card_id"]}
+    if not pd_card:
+        # Sem card de pipeline vinculado — nada a checar (ex: requisicoes legadas/avulsas)
+        return
+    study = await db.pd_stability_studies.find_one(
+        {"pd_card_id": pd_card["id"], "tenant_id": tenant_id}, {"_id": 0, "conditions": 1}
+    )
+    if not study:
+        raise HTTPException(
+            status_code=400,
+            detail="Estudo de estabilidade não iniciado. Registre ao menos o D48h em qualquer condição de estabilidade antes de entregar ao Comercial.",
+        )
+    has_d48h = any(
+        2 in (cond.get("completed_day_offsets") or [])
+        for cond in study.get("conditions", [])
+    )
+    if not has_d48h:
+        raise HTTPException(
+            status_code=400,
+            detail="Nenhuma leitura D48h (48 horas) registrada. Conclua o checkpoint D48h em ao menos uma condição de estabilidade antes de entregar ao Comercial.",
+        )
+
+
 @pd_router.put("/requests/{req_id}/status")
 async def transition_status(req_id: str, data: StatusTransition, request: Request):
     user = await get_current_user(request)
@@ -1297,32 +1338,7 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
 
     # RN-PD-STAB: D48h checkpoint required before delivering to Comercial
     if new_status == "WAITING_APPROVAL":
-        _stab_card = await db.pd_cards.find_one(
-            {"pd_request_id": req_id, "tenant_id": user["tenant_id"]},
-            {"_id": 0, "id": 1}
-        )
-        # Also check via linked_pd_card_id if the card wasn't found by pd_request_id
-        if not _stab_card and pd_req.get("linked_pd_card_id"):
-            _stab_card = {"id": pd_req["linked_pd_card_id"]}
-        if _stab_card:
-            _stab_study = await db.pd_stability_studies.find_one(
-                {"tenant_id": user["tenant_id"], "pd_card_id": _stab_card["id"]},
-                {"_id": 0, "conditions": 1}
-            )
-            if not _stab_study:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Estudo de estabilidade não iniciado. Registre ao menos o D48h em qualquer condição de estabilidade antes de entregar ao Comercial."
-                )
-            has_d48h = any(
-                2 in (cond.get("completed_day_offsets") or [])
-                for cond in _stab_study.get("conditions", [])
-            )
-            if not has_d48h:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Nenhuma leitura D48h (48 horas) registrada. Conclua o checkpoint D48h em ao menos uma condição de estabilidade antes de entregar ao Comercial."
-                )
+        await assert_d48h_stability_ok(req_id, user["tenant_id"])
 
     # Check blocking workflow tasks
     if new_status not in ("IN_PROGRESS", "REJECTED"):
@@ -2444,22 +2460,10 @@ async def update_sample(sample_id: str, data: SampleUpdate, request: Request):
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
     
     if update_fields.get("sent_to_client") == True:
-        # D48h gate: require at least one stability condition with D48h (day_offset=2) completed
+        # D48h gate: mesmo ponto de verdade usado por transition_status e pelo drag-and-drop do board
         dev = await db.pd_developments.find_one({"id": existing.get("development_id")}, {"_id": 0, "pd_request_id": 1})
         if dev and dev.get("pd_request_id"):
-            study = await db.pd_stability_studies.find_one(
-                {"pd_card_id": dev["pd_request_id"], "tenant_id": user["tenant_id"]},
-                {"_id": 0, "conditions": 1},
-            )
-            has_d48h = study and any(
-                2 in (c.get("completed_day_offsets") or [])
-                for c in (study.get("conditions") or [])
-            )
-            if not has_d48h:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Registre ao menos a leitura D48h em uma condição de estabilidade antes de entregar ao Comercial.",
-                )
+            await assert_d48h_stability_ok(dev["pd_request_id"], user["tenant_id"])
         update_fields["sent_at"] = now_iso()
         update_fields.setdefault("internal_approved", True)
 
@@ -4959,6 +4963,9 @@ async def assert_pd_card_ready_for_approval(card_id: str, tenant_id: str):
     )
     if not pd_request:
         return
+    # RN-PD-STAB: mesmo gate de D48h usado por transition_status e update_sample —
+    # antes, mover o card pelo Kanban (drag-and-drop) pulava essa checagem inteira (B7).
+    await assert_d48h_stability_ok(pd_request["id"], tenant_id)
     dev = await db.pd_developments.find_one(
         {"tenant_id": tenant_id, "pd_request_id": pd_request["id"]},
         {"_id": 0, "id": 1},
