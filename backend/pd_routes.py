@@ -1421,6 +1421,18 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
                 {"id": pd_req["linked_pd_card_id"], "tenant_id": user["tenant_id"]},
                 {"$set": {"status_pd": kanban_status, "pd_request_id": req_id, "updated_at": now_iso()}}
             )
+        # Push the moved card to the pipeline board live — without this, the transition above
+        # only takes effect on the board after a manual page refresh (B6).
+        if _broadcast_event:
+            _moved_card = await db.pd_cards.find_one(
+                {"pd_request_id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0}
+            )
+            if _moved_card:
+                await _broadcast_event(
+                    user["tenant_id"],
+                    "pd_card_moved",
+                    {"card": _moved_card, "from_status": current, "to_status": new_status},
+                )
         # Reverse-sync: push the new stage label back into the CRM sample variation
         try:
             pd_card = await db.pd_cards.find_one(
