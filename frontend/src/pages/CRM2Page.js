@@ -95,7 +95,7 @@ function createEmptySample() {
         sensorial: "",
         ph: "",
         observacao_tecnica: "",
-        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", observacoes_especificas: "" }],
+        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "BRL", observacoes_especificas: "" }],
     };
 }
 
@@ -294,6 +294,7 @@ export default function CRM2Page() {
             percentual_fragrancia: "",
             referencia_fragrancia: "",
             custo_fragrancia: "",
+            custo_fragrancia_currency: "BRL",
             observacoes_especificas: "",
         });
         setBatchSamples(next);

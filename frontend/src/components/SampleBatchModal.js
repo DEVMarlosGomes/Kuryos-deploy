@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Trash2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { FieldHint } from "@/components/ui/FieldHint";
 import { fmtPriceDisplay, fmtVolumeDisplay } from "@/lib/masks";
+import { CurrencyInput } from "@/components/ui/CurrencyInput";
 
 function formatSlugLabel(value) {
     if (!value) return "";
@@ -411,11 +412,13 @@ export default function SampleBatchModal({
                                                         value={variacao.referencia_fragrancia || ""}
                                                         onChange={(event) => updateVariacao(sampleIndex, variacaoIndex, "referencia_fragrancia", event.target.value)}
                                                     />
-                                                    <Input
-                                                        type="number"
-                                                        placeholder="Custo"
+                                                    <CurrencyInput
                                                         value={variacao.custo_fragrancia || ""}
-                                                        onChange={(event) => updateVariacao(sampleIndex, variacaoIndex, "custo_fragrancia", event.target.value)}
+                                                        currency={variacao.custo_fragrancia_currency || "BRL"}
+                                                        onValueChange={(value) => updateVariacao(sampleIndex, variacaoIndex, "custo_fragrancia", value)}
+                                                        onCurrencyChange={(currency) => updateVariacao(sampleIndex, variacaoIndex, "custo_fragrancia_currency", currency)}
+                                                        showHint={false}
+                                                        size="sm"
                                                     />
                                                 </div>
                                                 <Textarea
@@ -459,7 +462,7 @@ export default function SampleBatchModal({
                         sensorial: "",
                         ph: "",
                         observacao_tecnica: "",
-                        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", observacoes_especificas: "" }],
+                        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "BRL", observacoes_especificas: "" }],
                     }])}>
                         <Plus className="h-4 w-4 mr-2" /> Adicionar Outra Amostra
                     </Button>
