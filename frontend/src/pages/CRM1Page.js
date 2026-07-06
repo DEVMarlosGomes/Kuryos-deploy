@@ -61,6 +61,18 @@ const STAGES = [
     { id: "cliente_perdido", label: "Cliente Perdido", color: "bg-red-500" },
 ];
 
+// Espelha CLIENT_QUALIFICATION_REQUIRED_FIELDS (backend/crm_routes.py) só para exibição —
+// a lista de QUAIS campos faltam vem sempre do backend (missing_qualification_fields).
+const QUALIFICATION_FIELD_LABELS = {
+    canal_origem: "Canal de origem",
+    categoria_interesse: "Categoria de interesse",
+    temperatura_lead: "Temperatura",
+    responsavel_comercial: "Responsável comercial",
+    segmento: "Segmento",
+    "contato_principal.nome": "Contato — nome",
+    "contato_principal.whatsapp": "Contato — WhatsApp",
+};
+
 const CATEGORIA_OPTIONS = [
     { value: "perfume", label: "Perfume" },
     { value: "hidratante", label: "Hidratante" },
@@ -303,14 +315,11 @@ export default function CRM1Page() {
         categoria: client?.categoria_interesse?.[0] || "",
         responsavel_comercial: client?.responsavel_comercial || user?.id || "",
     }), [user]);
-    const isNewClientValid = Boolean(
-        newClient.nome_empresa.trim()
-        && newClient.canal_origem
-        && newClient.categoria_interesse.length
-        && newClient.temperatura_lead
-        && newClient.responsavel_comercial
-        && newClient.segmento
-    );
+    // A2: lead de prospecção — criação inicial exige só o nome da empresa. Os demais
+    // campos (canal, categoria, temperatura, responsável, segmento, contato) passam a
+    // ser exigidos apenas na transição para "qualificado" (validado no backend e
+    // sinalizado ao usuário via missingQualificationFields).
+    const isNewClientValid = Boolean(newClient.nome_empresa.trim());
 
     const clientsByStage = STAGES.reduce((acc, stage) => {
         acc[stage.id] = clients.filter(c => c.stage === stage.id);
@@ -425,7 +434,7 @@ export default function CRM1Page() {
             setBatchProjectError("");
             loadClients();
         } catch (e) {
-            const msg = e.response?.data?.detail || "Erro ao mover cliente";
+            const msg = formatApiError(e) || "Erro ao mover cliente";
             toast.error(msg);
         }
     };
@@ -443,7 +452,7 @@ export default function CRM1Page() {
             setJustificationText("");
             loadClients();
         } catch (e) {
-            toast.error(e.response?.data?.detail || "Erro ao mover cliente");
+            toast.error(formatApiError(e) || "Erro ao mover cliente");
         }
     };
 
@@ -458,7 +467,7 @@ export default function CRM1Page() {
             setPendingMove(null);
             loadClients();
         } catch (e) {
-            toast.error(e.response?.data?.detail || "Erro");
+            toast.error(formatApiError(e) || "Erro");
         }
     };
 
@@ -476,7 +485,7 @@ export default function CRM1Page() {
             setNewClient(createEmptyClient(user?.id || ""));
             loadClients();
         } catch (e) {
-            toast.error(e.response?.data?.detail || "Erro ao criar cliente");
+            toast.error(formatApiError(e) || "Erro ao criar cliente");
         }
     };
 
@@ -518,7 +527,7 @@ export default function CRM1Page() {
                 try {
                     await api.put(`/crm/clients/${batchClientId}/move`, { stage: pendingProjectMove.stage });
                 } catch (moveErr) {
-                    toast.error(`Projetos criados, mas não foi possível avançar o cliente: ${moveErr.response?.data?.detail || "erro desconhecido"}`);
+                    toast.error(`Projetos criados, mas não foi possível avançar o cliente: ${formatApiError(moveErr) || "erro desconhecido"}`);
                 }
             }
             loadClients();
@@ -665,6 +674,12 @@ export default function CRM1Page() {
                                                                 </span>
                                                             ))}
                                                         </div>
+                                                        {client.stage === "prospeccao" && (client.missing_qualification_fields || []).length > 0 && (
+                                                            <div className="mt-1.5 flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400">
+                                                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                                                <span className="truncate">Faltam {client.missing_qualification_fields.length} campo(s) para qualificar</span>
+                                                            </div>
+                                                        )}
                                                         <div className="mt-1.5 text-[10px] text-muted-foreground mono-num">
                                                             {new Date(client.created_at).toLocaleDateString("pt-BR")}
                                                         </div>
@@ -760,7 +775,7 @@ export default function CRM1Page() {
                                     <p className="text-[10px] text-muted-foreground">3 letras usadas no código do SKU (ex: CA-ABC-0001). Se vazio, usa as 3 primeiras letras da empresa.</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Temperatura *</Label>
+                                    <Label>Temperatura <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
                                     <Select value={newClient.temperatura_lead} onValueChange={(v) => setNewClient({ ...newClient, temperatura_lead: v })}>
                                         <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
                                         <SelectContent>
@@ -846,7 +861,7 @@ export default function CRM1Page() {
 
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>Canal de Origem *</Label>
+                                    <Label>Canal de Origem <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
                                     <Select value={newClient.canal_origem} onValueChange={(v) => setNewClient({ ...newClient, canal_origem: v })}>
                                         <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
                                         <SelectContent>
@@ -864,7 +879,7 @@ export default function CRM1Page() {
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Responsavel Comercial *</Label>
+                                    <Label>Responsavel Comercial <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
                                     <Select value={newClient.responsavel_comercial || ""} onValueChange={(v) => setNewClient({ ...newClient, responsavel_comercial: v })}>
                                         <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
                                         <SelectContent>
@@ -875,7 +890,7 @@ export default function CRM1Page() {
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Segmento *</Label>
+                                    <Label>Segmento <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
                                     <Select value={newClient.segmento || ""} onValueChange={(v) => setNewClient({ ...newClient, segmento: v })}>
                                         <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
                                         <SelectContent>
@@ -918,8 +933,8 @@ export default function CRM1Page() {
                             </div>
 
                             <div className="space-y-2">
-                                <Label>Categorias de Interesse *</Label>
-                                <div className={`space-y-3 rounded-lg border p-3 ${(newClient.categoria_interesse || []).length === 0 ? "border-destructive/50 bg-destructive/5" : "border-border"}`}>
+                                <Label>Categorias de Interesse <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
+                                <div className="space-y-3 rounded-lg border border-border p-3">
                                     {Object.entries(effectiveCategoryGroups).map(([group, values]) => (
                                         <div key={group} className="space-y-2">
                                             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -1374,7 +1389,7 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
             }
             setEditing({});
         } catch (e) {
-            toast.error(e.response?.data?.detail || "Erro ao salvar");
+            toast.error(formatApiError(e) || "Erro ao salvar");
         } finally {
             setSaving(false);
         }
@@ -1416,6 +1431,16 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
 
                     <TabsContent value="info" className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 mt-3">
                         <div className="space-y-5">
+                            {data.stage === "prospeccao" && (data.missing_qualification_fields || []).length > 0 && (
+                                <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 p-3">
+                                    <p className="text-xs font-semibold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                                        <AlertTriangle className="h-3.5 w-3.5" /> Faltam preencher para qualificar este lead:
+                                    </p>
+                                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                        {data.missing_qualification_fields.map((f) => QUALIFICATION_FIELD_LABELS[f] || f).join(", ")}
+                                    </p>
+                                </div>
+                            )}
                             {/* Prospecção — always visible */}
                             <section>
                                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Prospecção</h4>

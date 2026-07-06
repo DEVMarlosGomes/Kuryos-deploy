@@ -1135,48 +1135,58 @@ async def _validate_client_payload(
             raise HTTPException(status_code=400, detail="Responsável comercial inválido")
 
     if require_required_fields:
-        missing = []
-        contact = payload["contato_principal"]
-        if not clean_text(contact.get("nome", "")):
-            missing.append("contato_principal.nome")
-        if not clean_text(contact.get("whatsapp", "")):
-            missing.append("contato_principal.whatsapp")
-        if not payload["canal_origem"]:
-            missing.append("canal_origem")
-        if not payload["categoria_interesse"]:
-            missing.append("categoria_interesse")
-        if not payload["temperatura_lead"]:
-            missing.append("temperatura_lead")
-        if not payload["responsavel_comercial"]:
-            missing.append("responsavel_comercial")
-        if not payload["segmento"]:
-            missing.append("segmento")
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Campos obrigatórios ausentes: {', '.join(missing)}",
-            )
+        # A2: lead de prospecção — criação inicial exige só nome_empresa. Os demais
+        # campos (contato, canal_origem, categoria_interesse, temperatura, responsável,
+        # segmento) só passam a ser obrigatórios na transição para "qualificado"
+        # (ver _validate_client_transition_requirements).
+        if not clean_text(payload.get("nome_empresa", "")):
+            raise HTTPException(status_code=400, detail="Campo obrigatório ausente: nome_empresa")
 
     return payload
+
+
+CLIENT_QUALIFICATION_REQUIRED_FIELDS = [
+    ("canal_origem", "Canal de origem"),
+    ("categoria_interesse", "Categoria de interesse"),
+    ("temperatura_lead", "Temperatura"),
+    ("responsavel_comercial", "Responsável comercial"),
+    ("segmento", "Segmento"),
+    ("contato_principal.nome", "Contato — nome"),
+    ("contato_principal.whatsapp", "Contato — WhatsApp"),
+]
+
+
+def get_missing_qualification_fields(client: dict) -> list:
+    """Campos exigidos para avançar um lead de 'prospecção' para 'qualificado' (A2)."""
+    contact = client.get("contato_principal") or {}
+    missing = []
+    if not client.get("canal_origem"):
+        missing.append("canal_origem")
+    if not client.get("categoria_interesse"):
+        missing.append("categoria_interesse")
+    if not client.get("temperatura_lead"):
+        missing.append("temperatura_lead")
+    if not client.get("responsavel_comercial"):
+        missing.append("responsavel_comercial")
+    if not client.get("segmento"):
+        missing.append("segmento")
+    if not clean_text(contact.get("nome", "")):
+        missing.append("contato_principal.nome")
+    if not contact.get("whatsapp"):
+        missing.append("contato_principal.whatsapp")
+    return missing
 
 
 def _validate_client_transition_requirements(client: dict, target_stage: str):
     if target_stage != "qualificado":
         return
-    missing = []
-    contact = client.get("contato_principal") or {}
-    if not client.get("canal_origem"):
-        missing.append("canal_origem")
-    if not client.get("categoria_interesse"):
-        missing.append("categoria_interesse")
-    if not clean_text(contact.get("nome", "")):
-        missing.append("contato_principal.nome")
-    if not contact.get("whatsapp"):
-        missing.append("contato_principal.whatsapp")
+    missing = get_missing_qualification_fields(client)
     if missing:
+        labels = dict(CLIENT_QUALIFICATION_REQUIRED_FIELDS)
+        readable = ", ".join(labels.get(m, m) for m in missing)
         raise HTTPException(
             status_code=409,
-            detail=f"Preencha os campos obrigatórios antes de avançar: {', '.join(missing)}",
+            detail=f"Preencha os campos obrigatórios antes de avançar: {readable}",
         )
 
 
@@ -1373,6 +1383,8 @@ async def list_clients(
             ])
 
     clients = await db.crm_clients.find(query, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    for c in clients:
+        c["missing_qualification_fields"] = get_missing_qualification_fields(c) if c.get("stage") == "prospeccao" else []
     return clients
 
 
@@ -1384,6 +1396,7 @@ async def get_client(client_id: str, request: Request):
     )
     if not client:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    client["missing_qualification_fields"] = get_missing_qualification_fields(client) if client.get("stage") == "prospeccao" else []
     return client
 
 
