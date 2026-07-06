@@ -18,6 +18,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { toast } from "sonner";
 import { BACKEND_URL } from "@/lib/backend";
 import { FieldHint } from "@/components/ui/FieldHint";
+import { formatApiError } from "@/lib/formatError";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { indexToLetters } from "@/lib/letters";
 import {
   ArrowLeft, FlaskConical, Clock, Plus, Trash2, CheckCircle2, XCircle,
   Loader2, ArrowRight, FileText, DollarSign, Beaker, Package, History,
@@ -166,7 +169,7 @@ export default function PDDetail() {
       toast.success(isBackward ? "Etapa retrocedida!" : "Status atualizado!");
       fetchData();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao alterar status");
+      toast.error(formatApiError(err) || "Erro ao alterar status");
     }
   };
 
@@ -229,7 +232,7 @@ export default function PDDetail() {
       toast.success("Pesquisa vinculada ao projeto CRM!");
       setShowLinkCRM(false);
       fetchData();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao vincular"); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao vincular"); }
     finally { setLinkingCRM(false); }
   };
 
@@ -501,73 +504,95 @@ export default function PDDetail() {
           </TabsList>
 
           <TabsContent value="overview">
-            <OverviewTab req={req} dev={dev} formulas={formulas} tests={tests} samples={samples} approval={approval} costs={costs} history={history} onRefresh={fetchData} hasDev={hasDev} clientInfo={client_info} canEdit={canEdit} formulaCostData={formula_cost_data} setActiveTab={setActiveTab} documents={documents} updates={updates} pending={pending} canViewCommercial={canViewCommercial} labResults={lab_results} />
+            <ErrorBoundary label="Overview" resetKey={req.id}>
+              <OverviewTab req={req} dev={dev} formulas={formulas} tests={tests} samples={samples} approval={approval} costs={costs} history={history} onRefresh={fetchData} hasDev={hasDev} clientInfo={client_info} canEdit={canEdit} formulaCostData={formula_cost_data} setActiveTab={setActiveTab} documents={documents} updates={updates} pending={pending} canViewCommercial={canViewCommercial} labResults={lab_results} />
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="formula">
-            {hasDev ? (
-              <FormulaTab devId={dev.id} formulas={formulas} onRefresh={fetchData} canEdit={canEdit} clientInfo={client_info} req={req} />
-            ) : (
-              <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-            )}
+            <ErrorBoundary label="Manipulação" resetKey={req.id}>
+              {hasDev ? (
+                <FormulaTab devId={dev.id} formulas={formulas} onRefresh={fetchData} canEdit={canEdit} clientInfo={client_info} req={req} />
+              ) : (
+                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+              )}
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="tests">
-            {hasDev ? (
-              <TestsTab devId={dev.id} labResults={lab_results} onRefresh={fetchData} canEdit={canEdit} reqId={req.id} />
-            ) : (
-              <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-            )}
+            <ErrorBoundary label="Testes" resetKey={req.id}>
+              {hasDev ? (
+                <TestsTab devId={dev.id} labResults={lab_results} onRefresh={fetchData} canEdit={canEdit} reqId={req.id} />
+              ) : (
+                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+              )}
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="samples">
-            {hasDev ? (
-              <SamplesTab devId={dev.id} samples={samples} formulas={formulas} onRefresh={fetchData} canEdit={canEdit} productName={req.project_name || ""} />
-            ) : (
-              <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-            )}
+            <ErrorBoundary label="Amostras" resetKey={req.id}>
+              {hasDev ? (
+                <SamplesTab devId={dev.id} samples={samples} formulas={formulas} onRefresh={fetchData} canEdit={canEdit} productName={req.project_name || ""} />
+              ) : (
+                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+              )}
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="estabilidades">
-            <EstabilidadesTab reqId={req.id} req={req} canEdit={canEdit} />
+            <ErrorBoundary label="Estabilidades" resetKey={req.id}>
+              <EstabilidadesTab reqId={req.id} req={req} canEdit={canEdit} />
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="ficha_tecnica">
-            <FichaTecnicaTab reqId={req.id} formulas={formulas} req={req} dev={dev} canEdit={canEdit} />
+            <ErrorBoundary label="Ficha Técnica" resetKey={req.id}>
+              <FichaTecnicaTab reqId={req.id} formulas={formulas} req={req} dev={dev} canEdit={canEdit} />
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="updates">
-            <UpdatesTab reqId={req.id} updates={updates || []} pending={pending || []} onRefresh={fetchData} canEdit={canEdit} />
+            <ErrorBoundary label="Updates" resetKey={req.id}>
+              <UpdatesTab reqId={req.id} updates={updates || []} pending={pending || []} onRefresh={fetchData} canEdit={canEdit} />
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="costs">
-            {hasDev ? (
-              <CostsTab devId={dev.id} costVersions={cost_versions} formulas={formulas} formulaCostData={formula_cost_data} onRefresh={fetchData} canEdit={canEdit} canViewCommercial={canViewCommercial} />
-            ) : (
-              <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-            )}
+            <ErrorBoundary label="Custos P&D" resetKey={req.id}>
+              {hasDev ? (
+                <CostsTab devId={dev.id} costVersions={cost_versions} formulas={formulas} formulaCostData={formula_cost_data} onRefresh={fetchData} canEdit={canEdit} canViewCommercial={canViewCommercial} />
+              ) : (
+                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+              )}
+            </ErrorBoundary>
           </TabsContent>
 
           {canViewCommercial && (
             <TabsContent value="comercial">
-              {hasDev ? (
-                <ComercialTab devId={dev.id} costVersions={cost_versions} formulaCostData={formula_cost_data} onRefresh={fetchData} />
-              ) : (
-                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-              )}
+              <ErrorBoundary label="Comercial" resetKey={req.id}>
+                {hasDev ? (
+                  <ComercialTab devId={dev.id} costVersions={cost_versions} formulaCostData={formula_cost_data} onRefresh={fetchData} />
+                ) : (
+                  <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+                )}
+              </ErrorBoundary>
             </TabsContent>
           )}
 
           <TabsContent value="documents">
-            {hasDev ? (
-              <DocumentsTab devId={dev.id} documents={documents} onRefresh={fetchData} canEdit={canEdit} />
-            ) : (
-              <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
-            )}
+            <ErrorBoundary label="Documentos" resetKey={req.id}>
+              {hasDev ? (
+                <DocumentsTab devId={dev.id} documents={documents} onRefresh={fetchData} canEdit={canEdit} />
+              ) : (
+                <NeedsDev onAction={() => handleStatusChange("IN_PROGRESS")} status={req.status} canEdit={canEdit} />
+              )}
+            </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="live_docs">
-            <LiveDocumentsTab reqId={req.id} req={req} />
+            <ErrorBoundary label="Documentos Vivos" resetKey={req.id}>
+              <LiveDocumentsTab reqId={req.id} req={req} />
+            </ErrorBoundary>
           </TabsContent>
         </Tabs>
       </div>
@@ -625,7 +650,7 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
       setEditing(false);
       onRefresh();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao salvar");
+      toast.error(formatApiError(err) || "Erro ao salvar");
     } finally {
       setSaving(false);
     }
@@ -1187,7 +1212,7 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
             {formulaCostData ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-3">
                 <div><p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-0.5">Custo Unitário</p><p className="text-sm font-semibold font-mono">R$ {formulaCostData.custo_unitario?.toFixed(2) ?? "—"}</p></div>
-                <div><p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-0.5">Custo / kg</p><p className="text-sm font-semibold font-mono">R$ {formulaCostData.custo_por_kg?.toFixed(2) ?? "—"}</p></div>
+                <div><p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-0.5">Custo / kg</p><p className="text-sm font-semibold font-mono">R$ {formulaCostData.total_cost_per_kg?.toFixed(4) ?? "—"}</p></div>
                 <div><p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-0.5">Versões</p><p className="text-sm font-semibold">{(costs || []).length}</p></div>
               </div>
             ) : (
@@ -1457,7 +1482,7 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       setNewVersionJustification("");
       onRefresh();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao criar nova versão");
+      toast.error(formatApiError(err) || "Erro ao criar nova versão");
     } finally { setCreatingVersion(false); }
   };
 
@@ -1476,7 +1501,7 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       setFormulaName(""); setFormulaNotes(""); setFormulaVolume(""); setShowCreate(false);
       onRefresh();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro");
+      toast.error(formatApiError(err) || "Erro");
     } finally { setSaving(false); }
   };
 
@@ -1540,7 +1565,7 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       cancelEditItem();
       onRefresh();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao atualizar");
+      toast.error(formatApiError(err) || "Erro ao atualizar");
     }
   };
 
@@ -1549,7 +1574,7 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       await api.post(`/pd/formulas/${formulaId}/duplicate`);
       toast.success("Variação criada! Ajuste o ingrediente diferente.");
       onRefresh();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao duplicar"); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao duplicar"); }
   };
 
   const startEditConfig = (f) => {
@@ -2804,7 +2829,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
       setReadingDialog(null);
       fetchStudy();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao registrar leitura");
+      toast.error(formatApiError(err) || "Erro ao registrar leitura");
     } finally { setSavingReading(false); }
   };
 
@@ -2999,12 +3024,33 @@ const FT_PARAMS = [
 function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
   const [analise, setAnalise] = useState({});
   const EMPTY_ELABORACAO = { secoes: [] };
+  // Garante shape completo por seção — dados legados podem ter sido gravados sem `etapas`
+  // (ou por um caller futuro que não espelhe addSecao), o que quebrava o render em .map().
+  const normalizeSecao = (secao, idx) => ({
+    id: secao?.id || `s${idx}`,
+    nome: secao?.nome || `Fase ${indexToLetters(idx)}`,
+    tipo: secao?.tipo || "",
+    temperatura: secao?.temperatura || "",
+    agitacao: secao?.agitacao || "",
+    tempo_min: secao?.tempo_min || "",
+    etapas: Array.isArray(secao?.etapas) ? secao.etapas : (secao?.etapas ? [String(secao.etapas)] : [""]),
+  });
   const parseElaboracao = (raw) => {
     if (!raw) return EMPTY_ELABORACAO;
-    if (typeof raw === "object" && Array.isArray(raw.secoes)) return raw;
+    if (typeof raw === "object" && Array.isArray(raw.secoes)) {
+      return { ...raw, secoes: raw.secoes.map(normalizeSecao) };
+    }
     // legacy plain string → migrate to single section
     if (typeof raw === "string" && raw.trim()) return { secoes: [{ id: "s1", nome: "Modo de Preparo", temperatura: "", etapas: [raw] }] };
     return EMPTY_ELABORACAO;
+  };
+  // Dados legados podem ter aspecto/cor/densidade/... gravados como string simples
+  // (versão anterior da ficha). O backend exige objeto {especificacao, resultado, pa} —
+  // sem essa normalização, salvar reenvia a string e o backend rejeita com 422.
+  const normalizeParam = (val) => {
+    if (val && typeof val === "object") return { especificacao: val.especificacao || "", resultado: val.resultado || "", pa: val.pa || "" };
+    if (typeof val === "string" && val.trim()) return { especificacao: "", resultado: val, pa: "" };
+    return { especificacao: "", resultado: "", pa: "" };
   };
 
   const [form, setForm] = useState({
@@ -3034,12 +3080,12 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
         elaboracao: parseElaboracao(a.elaboracao),
         resp_tecnico: a.resp_tecnico || "",
         status_aprovacao: a.status_aprovacao || "",
-        aspecto: a.aspecto || { especificacao: "", resultado: "", pa: "" },
-        cor: a.cor || { especificacao: "", resultado: "", pa: "" },
-        densidade: a.densidade || { especificacao: "", resultado: "", pa: "" },
-        odor: a.odor || { especificacao: "", resultado: "", pa: "" },
-        ph: a.ph || { especificacao: "", resultado: "", pa: "" },
-        teor_alcool: a.teor_alcool || { especificacao: "", resultado: "", pa: "" },
+        aspecto: normalizeParam(a.aspecto),
+        cor: normalizeParam(a.cor),
+        densidade: normalizeParam(a.densidade),
+        odor: normalizeParam(a.odor),
+        ph: normalizeParam(a.ph),
+        teor_alcool: normalizeParam(a.teor_alcool),
       }));
     }).catch(() => {}).finally(() => setLoading(false));
   }, [reqId, req.project_name]);
@@ -3054,7 +3100,9 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
       await api.put(`/pd/requests/${reqId}/ficha-tecnica-ui`, form);
       toast.success("Ficha Técnica salva!");
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao salvar");
+      // FastAPI retorna `detail` como array de objetos em erros 422 — passar isso direto
+      // ao toast quebra o render (React não aceita array de objetos como child) e derruba a tela.
+      toast.error(formatApiError(err) || "Erro ao salvar");
     } finally { setSaving(false); }
   };
 
@@ -3065,7 +3113,7 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
     ...e,
     secoes: [...e.secoes, {
       id: `s${Date.now()}`,
-      nome: `Fase ${String.fromCharCode(65 + e.secoes.length)}`,
+      nome: `Fase ${indexToLetters(e.secoes.length)}`,
       tipo: "",
       temperatura: "",
       agitacao: "",
@@ -3075,9 +3123,9 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
   }));
   const removeSecao = (sid) => setElab(e => ({ ...e, secoes: e.secoes.filter(s => s.id !== sid) }));
   const updateSecao = (sid, field, val) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, [field]: val } : s) }));
-  const addEtapa = (sid) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: [...s.etapas, ""] } : s) }));
-  const removeEtapa = (sid, idx) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: s.etapas.filter((_, i) => i !== idx) } : s) }));
-  const updateEtapa = (sid, idx, val) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: s.etapas.map((et, i) => i === idx ? val : et) } : s) }));
+  const addEtapa = (sid) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: [...(s.etapas || []), ""] } : s) }));
+  const removeEtapa = (sid, idx) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: (s.etapas || []).filter((_, i) => i !== idx) } : s) }));
+  const updateEtapa = (sid, idx, val) => setElab(e => ({ ...e, secoes: e.secoes.map(s => s.id === sid ? { ...s, etapas: (s.etapas || []).map((et, i) => i === idx ? val : et) } : s) }));
   const moveSecao = (idx, dir) => setElab(e => {
     const arr = [...e.secoes];
     const to = idx + dir;
@@ -3303,7 +3351,7 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
                 <div className="bg-[#0A0A0B] text-white px-4 py-2.5 flex items-center gap-3 flex-wrap">
                   {/* Letter badge */}
                   <span className="flex items-center justify-center h-7 w-7 rounded-lg bg-white/10 text-sm font-bold shrink-0">
-                    {String.fromCharCode(65 + sIdx)}
+                    {indexToLetters(sIdx)}
                   </span>
 
                   {/* Phase name */}
@@ -3452,7 +3500,7 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
                   <div className="px-4 py-1.5 bg-muted/10">
                     <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Procedimento</span>
                   </div>
-                  {secao.etapas.map((etapa, eIdx) => (
+                  {(secao.etapas || []).map((etapa, eIdx) => (
                     <div key={eIdx} className="flex items-start gap-2 px-4 py-2 hover:bg-muted/20 group">
                       <span className="text-xs font-mono font-bold text-muted-foreground/60 mt-2 w-5 shrink-0 text-right select-none">
                         {eIdx + 1}.
@@ -3868,7 +3916,7 @@ function SamplesTab({ devId, samples, formulas, onRefresh, canEdit, productName 
       setEditingId(null);
       onRefresh();
     } catch (err) {
-      const msg = err?.response?.data?.detail || "Erro ao atualizar amostra";
+      const msg = formatApiError(err) || "Erro ao atualizar amostra";
       toast.error(msg);
     }
   };
@@ -4160,7 +4208,7 @@ function CostsTab({ devId, costVersions, formulas, formulaCostData, onRefresh, c
       });
       toast.success("Rascunho de custo salvo.");
       onRefresh();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao salvar custo."); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao salvar custo."); }
     finally { setSaving(false); }
   };
 
@@ -4170,7 +4218,7 @@ function CostsTab({ devId, costVersions, formulas, formulaCostData, onRefresh, c
       await api.post(`/pd/developments/${devId}/cost-versions/v1/submit`);
       toast.success("Custo v1 enviado para Compras.");
       onRefresh();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao enviar."); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao enviar."); }
     finally { setSubmitting(false); }
   };
 
@@ -4236,7 +4284,7 @@ function CostsTab({ devId, costVersions, formulas, formulaCostData, onRefresh, c
                 <tbody>
                   {(latestFormula.items || []).map(item => {
                     const totalC = (latestFormula.items || []).reduce((s, it) => s + (it.cost_brl || 0), 0);
-                    const pct = totalC > 0 ? (item.cost_brl / totalC * 100) : 0;
+                    const pct = totalC > 0 ? ((item.cost_brl || 0) / totalC * 100) : 0;
                     return (
                       <tr key={item.id} className="border-t">
                         <td className="p-2">{item.ingredient_name}</td>
@@ -4254,11 +4302,11 @@ function CostsTab({ devId, costVersions, formulas, formulaCostData, onRefresh, c
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="rounded-lg border p-3 text-center">
                   <div className="text-xs text-muted-foreground mb-1">Custo/Kg (R$)</div>
-                  <div className="text-lg font-bold">{formulaCostData.total_cost_per_kg.toFixed(4)}</div>
+                  <div className="text-lg font-bold">{Number(formulaCostData.total_cost_per_kg || 0).toFixed(4)}</div>
                 </div>
                 <div className="rounded-lg border p-3 text-center bg-green-50 dark:bg-green-950">
                   <div className="text-xs text-muted-foreground mb-1">Custo Unitário</div>
-                  <div className="text-lg font-bold text-green-700">R$ {formulaCostData.custo_unitario.toFixed(2)}</div>
+                  <div className="text-lg font-bold text-green-700">R$ {Number(formulaCostData.custo_unitario || 0).toFixed(2)}</div>
                   {formulaCostData.volume > 0 && (
                     <div className="text-[10px] text-muted-foreground">{formulaCostData.volume} {formulaCostData.volume_unit}</div>
                   )}
@@ -4266,12 +4314,12 @@ function CostsTab({ devId, costVersions, formulas, formulaCostData, onRefresh, c
                 {formulaCostData.indice_perdas > 0 && (
                   <div className="rounded-lg border p-3 text-center bg-orange-50 dark:bg-orange-950">
                     <div className="text-xs text-muted-foreground mb-1">c/ Perdas ({formulaCostData.indice_perdas}%)</div>
-                    <div className="text-lg font-bold text-orange-700">R$ {formulaCostData.custo_com_perdas.toFixed(2)}</div>
+                    <div className="text-lg font-bold text-orange-700">R$ {Number(formulaCostData.custo_com_perdas || 0).toFixed(2)}</div>
                   </div>
                 )}
                 <div className="rounded-lg border p-3 text-center">
                   <div className="text-xs text-muted-foreground mb-1">Cotação US$</div>
-                  <div className="text-lg font-bold">{formulaCostData.cotacao_usd.toFixed(2)}</div>
+                  <div className="text-lg font-bold">{Number(formulaCostData.cotacao_usd || 0).toFixed(2)}</div>
                 </div>
               </div>
             )}
@@ -4393,7 +4441,7 @@ function FormulaCostVersionsPanel({ formula, canViewCommercial, canEdit }) {
       setSaveForm({ custo_embalagem: "", custo_mao_obra: "" });
       fetchVersions();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro ao salvar versão");
+      toast.error(formatApiError(err) || "Erro ao salvar versão");
     } finally { setSaving(false); }
   };
 
@@ -4523,7 +4571,7 @@ function ComercialTab({ devId, costVersions, formulaCostData, onRefresh }) {
       });
       toast.success("Custos comerciais salvos.");
       onRefresh();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao salvar."); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao salvar."); }
     finally { setSaving(false); }
   };
 
@@ -4533,7 +4581,7 @@ function ComercialTab({ devId, costVersions, formulaCostData, onRefresh }) {
       await api.post(`/pd/developments/${devId}/cost-versions/v2/finalize`);
       toast.success("Custo comercial finalizado e comunicado ao P&D.");
       onRefresh();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao finalizar."); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao finalizar."); }
     finally { setFinalizing(false); }
   };
 
@@ -4917,7 +4965,7 @@ function FormulaPhaseEditor({ formulaId, canEdit }) {
       setAddForm({ titulo: "", descricao: "", temperatura: "" });
       setShowAdd(false);
       fetchPhases();
-    } catch (err) { toast.error(err.response?.data?.detail || "Erro ao adicionar fase"); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao adicionar fase"); }
     finally { setSaving(false); }
   };
 
@@ -5521,7 +5569,7 @@ function LiveDocumentsTab({ reqId, req }) {
       const { data } = await api.get(`/pd/requests/${reqId}/live-documents/${docType}/versions`);
       setVersions(Array.isArray(data) ? data : []);
     } catch (err) {
-      const detail = err?.response?.data?.detail || "Erro ao carregar versões";
+      const detail = formatApiError(err) || "Erro ao carregar versões";
       if (err?.response?.status !== 404) toast.error(detail);
       setVersions([]);
     } finally {
@@ -5539,7 +5587,7 @@ function LiveDocumentsTab({ reqId, req }) {
       const { data } = await api.get(`/pd/document-versions/${versionId}/diff`);
       setDiffData(data);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Erro ao carregar diff");
+      toast.error(formatApiError(err) || "Erro ao carregar diff");
     } finally {
       setDiffLoading(false);
     }
@@ -5566,7 +5614,7 @@ function LiveDocumentsTab({ reqId, req }) {
         setDiffData(data);
       }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Erro ao registrar decisão");
+      toast.error(formatApiError(err) || "Erro ao registrar decisão");
     } finally {
       setActingTaskId(null);
     }
@@ -5584,7 +5632,7 @@ function LiveDocumentsTab({ reqId, req }) {
       toast.success("Nova versão gerada");
       await fetchVersions();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Não foi possível gerar a versão");
+      toast.error(formatApiError(err) || "Não foi possível gerar a versão");
     } finally {
       setGenerating(false);
     }
