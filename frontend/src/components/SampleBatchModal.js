@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Trash2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { FieldHint } from "@/components/ui/FieldHint";
+import { fmtPriceDisplay, fmtVolumeDisplay } from "@/lib/masks";
 
 function formatSlugLabel(value) {
     if (!value) return "";
@@ -176,19 +177,23 @@ export default function SampleBatchModal({
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Faixa de preço (R$)</Label>
                                                 <Input
-                                                    type="number"
+                                                    type="text"
+                                                    inputMode="decimal"
                                                     value={projetoData.faixa_preco_venda ?? ""}
                                                     onChange={(e) => updateProjeto("faixa_preco_venda", e.target.value)}
+                                                    onBlur={(e) => updateProjeto("faixa_preco_venda", fmtPriceDisplay(e.target.value))}
                                                     placeholder="0,00"
                                                 />
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Volume estimado / pedido</Label>
                                                 <Input
-                                                    type="number"
+                                                    type="text"
+                                                    inputMode="numeric"
                                                     value={projetoData.volume_estimado_pedido ?? ""}
                                                     onChange={(e) => updateProjeto("volume_estimado_pedido", e.target.value)}
-                                                    placeholder="Unidades"
+                                                    onBlur={(e) => updateProjeto("volume_estimado_pedido", fmtVolumeDisplay(e.target.value))}
+                                                    placeholder="15.000"
                                                 />
                                             </div>
                                             <div className="space-y-2 md:col-span-2">

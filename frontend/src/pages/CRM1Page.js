@@ -25,6 +25,7 @@ import FilterBar, { applyFilters } from "@/components/FilterBar";
 import ListView from "@/components/ListView";
 import { formatApiError } from "@/lib/formatError";
 import { CurrencyInput, fmtCurrency } from "@/components/ui/CurrencyInput";
+import { fmtPriceDisplay, fmtVolumeDisplay, parsePriceInput, parseVolumeInput } from "@/lib/masks";
 
 function CRMSubNav({ active }) {
     const navigate = useNavigate();
@@ -188,30 +189,6 @@ function flattenUniqueOptions(groups = {}, flatOptions = []) {
     const groupedValues = Object.values(groups || {}).flatMap((values) => values || []);
     return Array.from(new Set([...(groupedValues || []), ...(flatOptions || [])])).filter(Boolean);
 }
-
-const fmtPriceDisplay = (v) => {
-    if (v === "" || v == null) return "";
-    const n = parseFloat(String(v).replace(/\./g, "").replace(",", "."));
-    if (isNaN(n)) return "";
-    return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
-const fmtVolumeDisplay = (v) => {
-    if (v === "" || v == null) return "";
-    const n = parseInt(String(v).replace(/\./g, "").replace(/,/g, ""), 10);
-    if (isNaN(n)) return "";
-    return n.toLocaleString("pt-BR");
-};
-
-const parsePriceInput = (str) => {
-    if (!str) return null;
-    return parseFloat(String(str).replace(/\./g, "").replace(",", ".")) || null;
-};
-
-const parseVolumeInput = (str) => {
-    if (!str) return null;
-    return parseInt(String(str).replace(/\./g, "").replace(/,/g, ""), 10) || null;
-};
 
 export default function CRM1Page() {
     const { user } = useAuth();

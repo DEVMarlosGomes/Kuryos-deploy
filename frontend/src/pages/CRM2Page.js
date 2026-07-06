@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "@/lib/api";
 import { formatApiError } from "@/lib/formatError";
 import { indexToLetters } from "@/lib/letters";
+import { fmtPriceDisplay, fmtVolumeDisplay, parsePriceInput, parseVolumeInput } from "@/lib/masks";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -411,8 +412,8 @@ export default function CRM2Page() {
                 publico_alvo: batchProjetoData.publico_alvo,
                 posicionamento: batchProjetoData.posicionamento,
                 tipo_servico: batchProjetoData.tipo_servico,
-                faixa_preco_venda: batchProjetoData.faixa_preco_venda !== "" ? Number(batchProjetoData.faixa_preco_venda) || null : null,
-                volume_estimado_pedido: batchProjetoData.volume_estimado_pedido !== "" ? parseInt(batchProjetoData.volume_estimado_pedido, 10) || null : null,
+                faixa_preco_venda: parsePriceInput(batchProjetoData.faixa_preco_venda),
+                volume_estimado_pedido: parseVolumeInput(batchProjetoData.volume_estimado_pedido),
                 prazo_desejado_amostra: batchProjetoData.prazo_desejado_amostra,
                 sensorial_desejado: batchProjetoData.sensorial_desejado,
                 claims_desejados: batchProjetoData.claims_desejados,
@@ -486,6 +487,15 @@ export default function CRM2Page() {
     };
 
     const selectedProject = selectedProjectData?.project || projects.find((project) => project.id === selectedProjectId) || null;
+
+    // A6/A7: máscara pt-BR (moeda / milhar) nos campos de edição do projeto — sincroniza
+    // o texto exibido sempre que o projeto selecionado muda ou é recarregado.
+    const [faixaPrecoDisplay, setFaixaPrecoDisplay] = useState("");
+    const [volumeEstimadoDisplay, setVolumeEstimadoDisplay] = useState("");
+    useEffect(() => {
+        setFaixaPrecoDisplay(fmtPriceDisplay(selectedProject?.faixa_preco_venda ?? ""));
+        setVolumeEstimadoDisplay(fmtVolumeDisplay(selectedProject?.volume_estimado_pedido ?? ""));
+    }, [selectedProject?.id, selectedProject?.faixa_preco_venda, selectedProject?.volume_estimado_pedido]);
 
     if (loading) {
         return (
@@ -769,19 +779,33 @@ export default function CRM2Page() {
                                             </Select>
                                         </div>
                                         <div className="space-y-2">
-                                            <Label>Faixa de preço de venda</Label>
+                                            <Label>Faixa de preço de venda (R$)</Label>
                                             <Input
-                                                type="number"
-                                                defaultValue={selectedProject.faixa_preco_venda || ""}
-                                                onBlur={(event) => handleUpdateProject(selectedProject.id, { faixa_preco_venda: event.target.value ? parseFloat(event.target.value) : null })}
+                                                type="text"
+                                                inputMode="decimal"
+                                                placeholder="0,00"
+                                                value={faixaPrecoDisplay}
+                                                onChange={(event) => setFaixaPrecoDisplay(event.target.value)}
+                                                onBlur={(event) => {
+                                                    const formatted = fmtPriceDisplay(event.target.value);
+                                                    setFaixaPrecoDisplay(formatted);
+                                                    handleUpdateProject(selectedProject.id, { faixa_preco_venda: parsePriceInput(event.target.value) });
+                                                }}
                                             />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Volume estimado por pedido</Label>
                                             <Input
-                                                type="number"
-                                                defaultValue={selectedProject.volume_estimado_pedido || ""}
-                                                onBlur={(event) => handleUpdateProject(selectedProject.id, { volume_estimado_pedido: event.target.value ? parseInt(event.target.value, 10) : null })}
+                                                type="text"
+                                                inputMode="numeric"
+                                                placeholder="15.000"
+                                                value={volumeEstimadoDisplay}
+                                                onChange={(event) => setVolumeEstimadoDisplay(event.target.value)}
+                                                onBlur={(event) => {
+                                                    const formatted = fmtVolumeDisplay(event.target.value);
+                                                    setVolumeEstimadoDisplay(formatted);
+                                                    handleUpdateProject(selectedProject.id, { volume_estimado_pedido: parseVolumeInput(event.target.value) });
+                                                }}
                                             />
                                         </div>
                                         <div className="space-y-2">
