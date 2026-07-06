@@ -169,6 +169,7 @@ class DirectOrderCreate(BaseModel):
     sku_id: str
     qtd: float
     valor_unitario: Optional[float] = None    # se omitido, usa o preço cadastrado no SKU
+    valor_unitario_currency: Optional[str] = None  # se omitido, usa a moeda cadastrada no SKU (BRL/USD)
     prazo_entrega: str = ""
     tipo_servico: str = "producao"             # producao | reposicao | retrabalho
     nivel_formalizacao: int = 1                # 1 | 2 | 3
@@ -652,12 +653,16 @@ async def create_direct_order(data: DirectOrderCreate, request: Request):
             status_code=400,
             detail="SKU sem preço unitário cadastrado — informe valor_unitario ou cadastre o preço no SKU antes de criar o pedido direto.",
         )
+    # Bugfix pos-auditoria: a moeda do SKU (preco_unitario_currency) nunca era lida nem
+    # repassada — o pedido sempre gravava BRL mesmo quando o SKU/override era em USD.
+    valor_unitario_currency = data.valor_unitario_currency or sku_doc.get("preco_unitario_currency") or "BRL"
 
     item = OrderItem(
         codigo_kuryos=sku_doc.get("codigo_interno", ""),
         item=sku_doc.get("nome_produto", ""),
         prazo_entrega=data.prazo_entrega,
         valor_unitario=valor_unitario,
+        valor_unitario_currency=valor_unitario_currency,
         qtd=data.qtd,
         valor_total=round(valor_unitario * data.qtd, 2),
         tipo_servico=data.tipo_servico,

@@ -72,10 +72,18 @@ export default function DirectOrderModal({ open, onOpenChange, onCreated }) {
     const pickSku = (s) => {
         setSku(s);
         setSkus([]);
+        // Bugfix pos-auditoria: a moeda do SKU nunca era lida — o preço pré-preenchido
+        // sempre aparecia (e era enviado) como se fosse BRL, mesmo quando o SKU foi
+        // cadastrado em USD.
         if (s.preco_unitario) setValorUnitario(String(s.preco_unitario));
+        setValorUnitarioCurrency(s.preco_unitario_currency || "BRL");
     };
 
-    const canSubmit = cliente && sku && parseVolumeInput(qtdDisplay) > 0 && parseFloat(String(valorUnitario).replace(",", ".")) > 0;
+    // CurrencyInput usa <input type="number"> nativo (ponto decimal puro, ex: "25.5") —
+    // NUNCA o formato mascarado pt-BR de lib/masks (onde ponto = separador de milhar).
+    // Usar parsePriceInput aqui corromperia o valor (25.5 -> 255); parseFloat direto é o certo.
+    const valorUnitarioNumeric = parseFloat(valorUnitario) || 0;
+    const canSubmit = cliente && sku && parseVolumeInput(qtdDisplay) > 0 && valorUnitarioNumeric > 0;
 
     const handleSubmit = async () => {
         if (!canSubmit) return;
@@ -85,7 +93,8 @@ export default function DirectOrderModal({ open, onOpenChange, onCreated }) {
                 cliente_id: cliente.id,
                 sku_id: sku.id,
                 qtd: parseVolumeInput(qtdDisplay),
-                valor_unitario: parseFloat(String(valorUnitario).replace(",", ".")) || null,
+                valor_unitario: valorUnitarioNumeric,
+                valor_unitario_currency: valorUnitarioCurrency,
                 prazo_entrega: prazoEntrega,
                 tipo_servico: tipoServico,
                 observacoes,
