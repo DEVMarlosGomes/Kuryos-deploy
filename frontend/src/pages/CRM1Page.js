@@ -75,16 +75,6 @@ const QUALIFICATION_FIELD_LABELS = {
     "contato_principal.whatsapp": "Contato — WhatsApp",
 };
 
-const CATEGORIA_OPTIONS = [
-    { value: "perfume", label: "Perfume" },
-    { value: "hidratante", label: "Hidratante" },
-    { value: "shampoo", label: "Shampoo" },
-    { value: "protetor_solar", label: "Protetor Solar" },
-    { value: "body_splash", label: "Body Splash" },
-    { value: "skin_care", label: "Skin Care" },
-    { value: "outro", label: "Outro" },
-];
-
 const LOSS_REASON_OPTIONS = [
     { value: "preco", label: "Preço" },
     { value: "prazo", label: "Prazo" },
@@ -264,10 +254,10 @@ export default function CRM1Page() {
         () => flattenUniqueOptions(channelGroups, crmConstants?.canal_origem || []),
         [channelGroups, crmConstants]
     );
-    const effectiveCategoryGroups = useMemo(
-        () => (Object.keys(categoryGroups).length ? categoryGroups : { categorias: CATEGORIA_OPTIONS.map((option) => option.value) }),
-        [categoryGroups]
-    );
+    // A4: fonte única de categorias é /crm/constants (categoria_interesse) — sem fallback
+    // hardcoded. Enquanto as constants carregam, o grupo fica vazio (nunca com uma lista
+    // divergente/desatualizada da real).
+    const effectiveCategoryGroups = categoryGroups;
     const effectiveChannelGroups = useMemo(
         () => (Object.keys(channelGroups).length ? channelGroups : (channelOptions.length ? { outros: channelOptions } : {})),
         [channelGroups, channelOptions]
@@ -281,12 +271,8 @@ export default function CRM1Page() {
     const projectServiceOptions = crmConstants?.project_tipo_servico || [];
     const projectRestrictionOptions = crmConstants?.project_restricoes_tecnicas || [];
     const projectCategoryOptions = useMemo(
-        () => (
-            Object.keys(effectiveCategoryGroups).length
-                ? Object.entries(effectiveCategoryGroups).flatMap(([group, values]) =>
-                    values.map((value) => ({ value, group, label: formatSlugLabel(value) }))
-                )
-                : CATEGORIA_OPTIONS.map((option) => ({ ...option, group: "fallback" }))
+        () => Object.entries(effectiveCategoryGroups).flatMap(([group, values]) =>
+            values.map((value) => ({ value, group, label: formatSlugLabel(value) }))
         ),
         [effectiveCategoryGroups]
     );

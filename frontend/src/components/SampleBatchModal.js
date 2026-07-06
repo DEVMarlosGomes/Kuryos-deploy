@@ -38,6 +38,12 @@ export default function SampleBatchModal({
 
     const sampleTypes = constants?.sample_tipos || [];
     const variationParams = constants?.sample_parametros_variacao || [];
+    // A4/A5: mesma fonte de verdade do CRM (categoria_interesse / project_tipo_servico) —
+    // sem input livre divergente.
+    const categoriaOptions = Object.entries(constants?.categoria_interesse || {}).flatMap(([group, values]) =>
+        (values || []).map((value) => ({ value, group, label: formatSlugLabel(value) }))
+    );
+    const tipoServicoOptions = constants?.project_tipo_servico || [];
 
     const updateSample = (index, field, value) => {
         const next = [...batchSamples];
@@ -110,11 +116,14 @@ export default function SampleBatchModal({
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Categoria</Label>
-                                                <Input
-                                                    value={projetoData.categoria || ""}
-                                                    onChange={(e) => updateProjeto("categoria", e.target.value)}
-                                                    placeholder="Ex: Capilares"
-                                                />
+                                                <Select value={projetoData.categoria || ""} onValueChange={(value) => updateProjeto("categoria", value)}>
+                                                    <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {categoriaOptions.map((option) => (
+                                                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Responsável comercial</Label>
@@ -160,11 +169,14 @@ export default function SampleBatchModal({
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Tipo de serviço</Label>
-                                                <Input
-                                                    value={projetoData.tipo_servico || ""}
-                                                    onChange={(e) => updateProjeto("tipo_servico", e.target.value)}
-                                                    placeholder="Desenvolvimento, adaptação..."
-                                                />
+                                                <Select value={projetoData.tipo_servico || ""} onValueChange={(value) => updateProjeto("tipo_servico", value)}>
+                                                    <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {tipoServicoOptions.map((option) => (
+                                                            <SelectItem key={option} value={option}>{formatSlugLabel(option)}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
                                             <div className="space-y-2">
                                                 <Label className="text-violet-700">Prazo desejado</Label>

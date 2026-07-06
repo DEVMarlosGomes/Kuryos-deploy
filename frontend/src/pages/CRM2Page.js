@@ -203,6 +203,12 @@ export default function CRM2Page() {
     const projectServiceOptions = constants?.project_tipo_servico || [];
     const projectRestrictionOptions = constants?.project_restricoes_tecnicas || [];
     const sampleConstants = constants || {};
+    // A4: mesma fonte de verdade do cliente (categoria_interesse) — sem lista própria.
+    const projectCategoryOptions = useMemo(() => (
+        Object.entries(constants?.categoria_interesse || {}).flatMap(([group, values]) =>
+            (values || []).map((value) => ({ value, group, label: formatSlugLabel(value) }))
+        )
+    ), [constants]);
 
     // === Filter configuration ===
     const filterFields = useMemo(() => ([
@@ -709,10 +715,17 @@ export default function CRM2Page() {
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Categoria</Label>
-                                            <Input
-                                                defaultValue={selectedProject.categoria || ""}
-                                                onBlur={(event) => { if (event.target.value !== selectedProject.categoria) handleUpdateProject(selectedProject.id, { categoria: event.target.value }); }}
-                                            />
+                                            <Select
+                                                value={selectedProject.categoria || ""}
+                                                onValueChange={(value) => handleUpdateProject(selectedProject.id, { categoria: value })}
+                                            >
+                                                <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                                <SelectContent>
+                                                    {projectCategoryOptions.map((option) => (
+                                                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Responsável comercial</Label>
