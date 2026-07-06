@@ -2741,6 +2741,12 @@ function SampleBatchSection({ devId, formulas, onRefresh, canEdit }) {
 
 /* ============ STABILITY GRID PANEL (shared between Estabilidades + Testes) ============ */
 
+// STABILITY_CONDITIONS (backend/pd_routes.py) hoje só emite 5 códigos para estudos NOVOS
+// (ambient/oven_45/freezer_minus5/light_exposure/freeze_thaw). Os 4 extras abaixo
+// (climate_30_75/oven_40/refrigerated_5/dark_storage) foram removidos do backend no
+// commit b145deb, mas estudos criados antes dele ainda têm esses códigos gravados em
+// db.pd_stability_studies — mantidos aqui só para essas leituras antigas continuarem
+// com ícone/cor próprios no histórico (read-only). Não oferecidos em estudos novos.
 const CONDITION_ICONS = {
   ambient: Sparkles,
   climate_30_75: Wind,
