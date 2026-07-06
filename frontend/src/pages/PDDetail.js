@@ -539,7 +539,7 @@ export default function PDDetail() {
 
           <TabsContent value="ficha_tecnica">
             <ErrorBoundary label="Ficha Técnica" resetKey={req.id}>
-              <FichaTecnicaTab reqId={req.id} formulas={formulas} req={req} dev={dev} canEdit={canEdit} />
+              <FichaTecnicaTab reqId={req.id} formulas={formulas} req={req} dev={dev} canEdit={canEdit} labResults={lab_results} />
             </ErrorBoundary>
           </TabsContent>
 
@@ -3015,7 +3015,17 @@ const FT_PARAMS = [
   { key: "teor_alcool", label: "Teor de Álcool" },
 ];
 
-function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
+// B11: mapeia cada parâmetro da Ficha Técnica para o campo equivalente já preenchido
+// em Características Padrão (aba Testes / db.pd_lab_results), evitando redigitação.
+// Sem correspondente para densidade/teor_alcool — não existe medição equivalente lá.
+const FT_PARAM_SOURCE = {
+  aspecto: (lr) => lr?.sensorial?.aspecto,
+  cor: (lr) => lr?.sensorial?.cor,
+  odor: (lr) => lr?.sensorial?.odor,
+  ph: (lr) => lr?.ph?.valor_medido,
+};
+
+function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit, labResults }) {
   const [analise, setAnalise] = useState({});
   const EMPTY_ELABORACAO = { secoes: [] };
   // Garante shape completo por seção — dados legados podem ter sido gravados sem `etapas`
@@ -3046,6 +3056,20 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
     if (typeof val === "string" && val.trim()) return { especificacao: "", resultado: val, pa: "" };
     return { especificacao: "", resultado: "", pa: "" };
   };
+  const [autoFilled, setAutoFilled] = useState({});
+  // B11: se o "resultado" ainda não foi preenchido na ficha, sugere o valor já
+  // registrado em Características Padrão (nunca sobrescreve o que o usuário já digitou).
+  const normalizeParamWithSource = (key, val) => {
+    const normalized = normalizeParam(val);
+    if (!normalized.resultado) {
+      const sourceVal = FT_PARAM_SOURCE[key]?.(labResults);
+      if (sourceVal) {
+        setAutoFilled(prev => ({ ...prev, [key]: true }));
+        return { ...normalized, resultado: sourceVal };
+      }
+    }
+    return normalized;
+  };
 
   const [form, setForm] = useState({
     produto: "", lote: "", data_fabricacao: "", validade: "", quantidade: "",
@@ -3074,11 +3098,11 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
         elaboracao: parseElaboracao(a.elaboracao),
         resp_tecnico: a.resp_tecnico || "",
         status_aprovacao: a.status_aprovacao || "",
-        aspecto: normalizeParam(a.aspecto),
-        cor: normalizeParam(a.cor),
+        aspecto: normalizeParamWithSource("aspecto", a.aspecto),
+        cor: normalizeParamWithSource("cor", a.cor),
         densidade: normalizeParam(a.densidade),
-        odor: normalizeParam(a.odor),
-        ph: normalizeParam(a.ph),
+        odor: normalizeParamWithSource("odor", a.odor),
+        ph: normalizeParamWithSource("ph", a.ph),
         teor_alcool: normalizeParam(a.teor_alcool),
       }));
     }).catch(() => {}).finally(() => setLoading(false));
@@ -3199,7 +3223,14 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
               <tbody>
                 {FT_PARAMS.map(({ key, label }) => (
                   <tr key={key} className="border-t hover:bg-muted/20">
-                    <td className="p-3 font-medium text-sm">{label}</td>
+                    <td className="p-3 font-medium text-sm">
+                      {label}
+                      {autoFilled[key] && (
+                        <span className="ml-1.5 text-[9px] font-normal text-emerald-600" title="Preenchido a partir de Características Padrão (aba Testes)">
+                          (de Características Padrão)
+                        </span>
+                      )}
+                    </td>
                     <td className="p-2">
                       <Input
                         value={form[key]?.especificacao || ""}
@@ -3213,7 +3244,7 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit }) {
                     <td className="p-2">
                       <Input
                         value={form[key]?.resultado || ""}
-                        onChange={e => setParam(key, "resultado", e.target.value)}
+                        onChange={e => { setAutoFilled(prev => ({ ...prev, [key]: false })); setParam(key, "resultado", e.target.value); }}
                         placeholder="Resultado medido..."
                         className="h-7 text-xs border-0 bg-transparent focus:bg-background focus:border"
                         disabled={!canEdit}
