@@ -3713,6 +3713,78 @@ async def duplicate_formula(formula_id: str, request: Request):
     return new_formula
 
 
+@pd_router.post("/formulas/{formula_id}/import-into/{development_id}")
+async def import_formula_into_development(formula_id: str, development_id: str, request: Request):
+    """B13: importa a composição de uma fórmula existente (banco de fórmulas) como
+    rascunho editável em outro desenvolvimento — deep copy, nunca referência: alterar
+    a cópia não afeta a fórmula de origem. Registra importada_de_* para rastreabilidade."""
+    user = await get_current_user(request)
+    if not can_view_formula_composition(user):
+        raise HTTPException(status_code=403, detail="Seu perfil não tem permissão para importar composição de fórmulas.")
+
+    src = await db.pd_formulas.find_one({"id": formula_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not src:
+        raise HTTPException(status_code=404, detail="Fórmula de origem não encontrada")
+
+    target_dev = await db.pd_developments.find_one({"id": development_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not target_dev:
+        raise HTTPException(status_code=404, detail="Desenvolvimento de destino não encontrado")
+
+    src_dev = await db.pd_developments.find_one({"id": src["development_id"]}, {"_id": 0, "pd_request_id": 1})
+    src_req_id = src_dev.get("pd_request_id") if src_dev else None
+
+    src_items = await db.pd_formula_items.find({"formula_id": formula_id}, {"_id": 0}).to_list(200)
+
+    siblings = await db.pd_formulas.find(
+        {"development_id": development_id}, {"version": 1}
+    ).to_list(100)
+    next_version = max((s.get("version", 1) for s in siblings), default=0) + 1
+
+    new_formula_id = new_id()
+    new_formula = {
+        "id": new_formula_id,
+        "tenant_id": user["tenant_id"],
+        "development_id": development_id,
+        "name": src.get("name", "Fórmula importada"),
+        "notes": src.get("notes", ""),
+        "volume": src.get("volume", 0),
+        "volume_unit": src.get("volume_unit", "mL"),
+        "indice_perdas": src.get("indice_perdas", 0),
+        "cotacao_usd": src.get("cotacao_usd", 6.00),
+        "version": next_version,
+        "locked": False,
+        "parent_formula_id": None,
+        "version_justification": "Importada de outra requisição",
+        "importada_de_formula_id": formula_id,
+        "importada_de_request_id": src_req_id,
+        "created_at": now_iso(),
+        "created_by": user["id"],
+        "created_by_name": user.get("name", ""),
+    }
+    await db.pd_formulas.insert_one(new_formula)
+    new_formula.pop("_id", None)
+
+    new_items = []
+    for item in src_items:
+        new_item = {**{k: v for k, v in item.items() if k != "_id"}, "id": new_id(), "formula_id": new_formula_id}
+        new_items.append(new_item)
+    if new_items:
+        await db.pd_formula_items.insert_many(new_items)
+
+    await audit_log(
+        tenant_id=user["tenant_id"],
+        user_id=user["id"],
+        user_name=user.get("name", ""),
+        action="formula_imported",
+        entity_type="pd_formula",
+        entity_id=new_formula_id,
+        after={"imported_from_formula_id": formula_id, "imported_from_request_id": src_req_id, "target_development_id": development_id},
+    )
+
+    new_formula["items"] = [{k: v for k, v in it.items() if k != "_id"} for it in new_items]
+    return new_formula
+
+
 # ============ STABILITY STUDY INIT FOR PD CARD ============
 
 @pd_router.get("/requests/{req_id}/stability-study")

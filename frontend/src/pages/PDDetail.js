@@ -27,7 +27,7 @@ import {
   Eye, Download, Pencil, Save, X, ShieldCheck, Send, MessageSquare, Settings2,
   Bell, Hourglass, AlertTriangle, Sparkles, ClipboardList, ThumbsUp, ThumbsDown,
   CheckSquare, XSquare, Lock, Unlock, RefreshCw, TestTube, TrendingUp,
-  Thermometer, Wind, Snowflake, Sun, ChevronUp, ChevronDown, Copy,
+  Thermometer, Wind, Snowflake, Sun, ChevronUp, ChevronDown, Copy, Search,
   Building2, ShoppingCart, Layers, CheckCircle, Clock4, AlertCircle,
   GitBranch, Combine, ChevronRight, FlaskRound, ExternalLink
 } from "lucide-react";
@@ -1392,8 +1392,134 @@ function MiniCard({ icon: Icon, label, value, color, extra, extraColor }) {
 }
 
 /* ============ FORMULA TAB (Manipulação) ============ */
+// B13: busca no banco de fórmulas (GET /pd/formulas/bank já traz a composição completa
+// quando o perfil pode ver custos — reaproveitado aqui tanto pra busca quanto preview,
+// sem precisar de um endpoint novo só pra isso) e copia como rascunho no desenvolvimento atual.
+function ImportFormulaDialog({ open, onOpenChange, devId, onImported }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [importing, setImporting] = useState(false);
+
+  useEffect(() => {
+    if (!open) { setQuery(""); setResults([]); setSelected(null); return; }
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get("/pd/formulas/bank", { params: query.trim() ? { q: query.trim() } : {} });
+        setResults((Array.isArray(data) ? data : []).filter(f => f.development_id !== devId).slice(0, 30));
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [open, query, devId]);
+
+  const handleImport = async () => {
+    if (!selected) return;
+    setImporting(true);
+    try {
+      const { data } = await api.post(`/pd/formulas/${selected.id}/import-into/${devId}`);
+      toast.success(`Fórmula "${data.name}" importada como rascunho (v${data.version}).`);
+      onOpenChange(false);
+      onImported?.();
+    } catch (err) {
+      toast.error(formatApiError(err) || "Erro ao importar fórmula");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Importar Fórmula</DialogTitle>
+          <p className="text-xs text-muted-foreground">
+            Busque uma fórmula de outra requisição e importe a composição como rascunho editável aqui —
+            a fórmula de origem não é alterada.
+          </p>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input className="pl-8" placeholder="Buscar por produto, cliente, ingrediente..." value={query} onChange={(e) => { setQuery(e.target.value); setSelected(null); }} />
+          </div>
+
+          {!selected && (
+            <div className="border rounded-md max-h-64 overflow-y-auto divide-y">
+              {loading && <div className="p-3 text-xs text-muted-foreground">Buscando...</div>}
+              {!loading && results.length === 0 && (
+                <div className="p-3 text-xs text-muted-foreground">Nenhuma fórmula encontrada.</div>
+              )}
+              {results.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  disabled={f.restricted_view}
+                  onClick={() => setSelected(f)}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-between gap-2"
+                  title={f.restricted_view ? "Seu perfil não pode ver a composição desta fórmula" : ""}
+                >
+                  <span className="min-w-0">
+                    <span className="font-medium truncate block">{f.name} <span className="text-muted-foreground font-normal">v{f.version}</span></span>
+                    <span className="text-xs text-muted-foreground truncate block">{f.project_name} — {f.origin_label}</span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">{f.item_count} item(ns)</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {selected && (
+            <div className="border rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold">{selected.name} <span className="text-muted-foreground font-normal">v{selected.version}</span></p>
+                  <p className="text-xs text-muted-foreground">{selected.project_name} — {selected.origin_label}</p>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>Trocar</Button>
+              </div>
+              <div className="max-h-56 overflow-y-auto border rounded">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-muted/50 text-left">
+                      <th className="p-1.5 font-medium">Ingrediente</th>
+                      <th className="p-1.5 font-medium text-right">%</th>
+                      <th className="p-1.5 font-medium">Fase</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(selected.items || []).map((it, idx) => (
+                      <tr key={idx} className="border-t">
+                        <td className="p-1.5">{it.ingredient_name}</td>
+                        <td className="p-1.5 text-right font-mono">{(it.percentage || 0).toFixed(2)}</td>
+                        <td className="p-1.5">{it.phase || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleImport} disabled={!selected || importing} className="gap-1.5">
+            <Copy className="h-3.5 w-3.5" /> Importar como rascunho
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [formulaName, setFormulaName] = useState("");
   const [formulaNotes, setFormulaNotes] = useState("");
   const [formulaVolume, setFormulaVolume] = useState("");
@@ -1639,10 +1765,17 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       )}
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold">Manipulação / Formulação ({formulas.length})</h3>
-        <Button size="sm" onClick={() => setShowCreate(true)} className="gap-1.5" disabled={!canEdit}>
-          <Plus className="h-3.5 w-3.5" /> Nova Versão
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="gap-1.5" disabled={!canEdit}>
+            <Copy className="h-3.5 w-3.5" /> Importar Fórmula
+          </Button>
+          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-1.5" disabled={!canEdit}>
+            <Plus className="h-3.5 w-3.5" /> Nova Versão
+          </Button>
+        </div>
       </div>
+
+      <ImportFormulaDialog open={showImport} onOpenChange={setShowImport} devId={devId} onImported={onRefresh} />
 
       {showCreate && (
         <Card className="border-primary/50">
