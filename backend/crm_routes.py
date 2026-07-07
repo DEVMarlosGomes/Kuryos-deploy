@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import logging
+import re
 import asyncio
 import os
 import base64
@@ -28,12 +29,9 @@ from workflow_engine import (
     next_sample_number,
     next_sample_code,
     int_to_letters,
-    next_sku_number,
-    next_sku_per_pair,
     next_sku_per_pair_v2,
     build_sku_code_v2,
     cat2_from_categoria,
-    cat3_from_categoria,
     normalise_cli3,
     normalise_cli4,
     suggest_cli4_candidates,
@@ -60,6 +58,7 @@ from rbac import (
     DOC_REVIEWERS,
     ADMIN_ONLY,
 )
+from produtos_routes import find_or_create_produto_pai, _vincular_sku_ao_produto_pai_internal
 
 logger = logging.getLogger(__name__)
 
@@ -3439,13 +3438,12 @@ async def move_variacao(sample_id: str, variacao_id: str, data: VariacaoMove, re
         metadata={"sample_id": sample_id, "tasks_generated": [t["id"] for t in new_tasks]},
     )
 
-    # TRIGGER: Auto-create SKU when variação is approved
+    # Auditoria de SKU: geração de SKU foi removida deste endpoint (formato antigo,
+    # sem validação R25) — este endpoint é bloqueado para perfis comerciais e nunca é
+    # chamado pelo front (só resultado_cliente, abaixo, é o caminho real de aprovação
+    # pelo cliente). sku_created mantido no payload de resposta por compatibilidade.
     sku_created = None
     if new_status == "aprovada":
-        # Encontrar a variação atualizada
-        updated_variacao = next((v for v in updated.get("variacoes", []) if v["id"] == variacao_id), None)
-        if updated_variacao:
-            sku_created = await _create_sku_from_variacao(updated, updated_variacao, user)
         await _advance_project_stage_if_needed(
             updated["projeto_id"],
             "em_negociacao",
@@ -3663,12 +3661,22 @@ async def resultado_cliente(
         metadata={"sample_id": sample_id, "pd_card_id": pd_card["id"] if pd_card else None},
     )
 
+    # Auditoria de SKU: este era o ÚNICO ponto real de aprovação (o front nunca chama
+    # os endpoints /move que disparavam a geração antiga) e nunca gerava SKU nenhum.
+    sku_created = None
+    if data.resultado == "aprovada":
+        updated_sample = await db.crm_samples.find_one({"id": sample_id, "tenant_id": tenant_id}, {"_id": 0})
+        updated_variacao = next((v for v in (updated_sample or {}).get("variacoes", []) if v["id"] == variacao_id), None)
+        if updated_sample and updated_variacao:
+            sku_created = await _create_sku_from_variacao_v2(updated_sample, updated_variacao, user)
+
     return {
         "success": True,
         "variacao_id": variacao_id,
         "resultado": data.resultado,
         "status_atualizado": novo_status_crm,
         "pd_card_notificado": pd_card_notificado,
+        "sku_created": sku_created,
     }
 
 
@@ -3848,86 +3856,81 @@ async def add_variacoes_to_sample(sample_id: str, data: AddVariacoesRequest, req
     }
 
 
-async def _create_sku_from_variacao(sample: dict, variacao: dict, user: dict) -> dict:
-    """Auto-create SKU entity when a variação is approved"""
-    tenant_id = sample["tenant_id"]
-
-    # Resolve CAT2 and CLI3 for new code format [CAT2]-[CLI3]-[SEQ4]
-    categoria = sample.get("categoria", "")
-    cat2 = cat2_from_categoria(categoria)
-    client = await db.crm_clients.find_one({"id": sample["cliente_id"], "tenant_id": tenant_id}, {"_id": 0})
-    raw_cli3 = (client.get("cli3") or client.get("nome_empresa", "") if client else "")
-    cli3 = normalise_cli3(raw_cli3)
-    seq = await next_sku_per_pair(tenant_id, cat2, cli3)
-    codigo = f"{cat2}-{cli3}-{str(seq).zfill(4)}"
-
-    now = _now_iso()
-    sku_id = _new_id()
-
-    sku = {
-        "id": sku_id,
-        "tenant_id": tenant_id,
-        "codigo_interno": codigo,
-        "cat2": cat2,
-        "cli3": cli3,
-        "nome_produto": f"{sample['nome_produto']} - {variacao['codigo']}",
-        "categoria": categoria,
-        "formula_vinculada": "",
-        "cliente_id": sample["cliente_id"],
-        "cliente_nome": sample.get("cliente_nome", ""),
-        "projeto_id": sample["projeto_id"],
-        "projeto_nome": sample.get("projeto_nome", ""),
-        "amostra_id": sample["id"],
-        "amostra_variacao_id": variacao["id"],
-        "descricao_aplicacao": variacao.get("descricao_aplicacao", ""),
-        "preco_unitario": variacao.get("custo_fragrancia", 0.0),
-        "moq": 0,
-        "anvisa": {"numero": "", "validade": None},
-        "status": "ativo",
-        "descontinuado_motivo": None,
-        "descontinuado_em": None,
-        "descontinuado_por": None,
-        "historico_pedidos": [],
-        "data_ultimo_pedido": None,
-        "frequencia_media_recompra_dias": 0,
-        "medias_producao": {
-            "media_geral_unh": None,
-            "media_12m_unh": None,
-            "media_3m_unh": None,
-            "media_1m_unh": None,
-            "meta_unh": None,
-            "ajuste_percentual": 0,
-            "meta_set_by": None,
-            "meta_set_at": None,
-            "historico_producao": [],
-        },
-        "created_at": now,
-        "updated_at": now,
-    }
-
-    await db.skus.insert_one(sku)
-    sku.pop("_id", None)
-
-    # Atualizar variação com SKU ID
-    await db.crm_samples.update_one(
-        {"id": sample["id"], "variacoes.id": variacao["id"]},
-        {"$set": {"variacoes.$.sku_id": sku_id, "variacoes.$.gera_sku": True}}
-    )
-
-    logger.info(f"Auto-created SKU {codigo} from variação {variacao['codigo']}")
-    return sku
-
-
 # ======================================================================
 #  SKU (auto-generated from approved samples)
 # ======================================================================
 
-async def _check_sku_dependency_chain(sample: dict, tenant_id: str) -> None:
+_SKU_CODE_RE = re.compile(r"^[A-Z]{3}-[A-Z]{4}-\d{4}$")
+
+
+def _assert_valid_sku_code(codigo: str) -> None:
+    """Rede de segurança pós-construção: build_sku_code_v2 já é determinística (força
+    uppercase, comprimento fixo), então isso não deveria disparar nunca — mas um código
+    de SKU malformado indo pro banco é caro demais de corrigir depois pra não ter uma
+    checagem explícita. 13 caracteres: CAT3(3) + '-' + CLI4(4) + '-' + SEQ4(4)."""
+    if not codigo or len(codigo) != 13 or not _SKU_CODE_RE.match(codigo):
+        raise HTTPException(status_code=500, detail=f"Código de SKU gerado em formato inválido: '{codigo}' (esperado XXX-XXXX-0000)")
+
+
+def _normalize_categoria_key(s: str) -> str:
+    s = (s or "").lower().strip()
+    for a, b in (("ã", "a"), ("é", "e"), ("ó", "o"), ("ç", "c"), (" ", "_"), ("/", "_"), ("-", "_")):
+        s = s.replace(a, b)
+    while "__" in s:
+        s = s.replace("__", "_")
+    return s
+
+
+async def resolve_cat3_from_categoria(categoria: str, tenant_id: str) -> Optional[str]:
+    """
+    Resolve o CAT3 de uma categoria dinamicamente a partir de db.categorias (registro
+    governado, R22) — não do dict estático CAT3_MAP/cat3_from_categoria (workflow_engine.py),
+    que fica só como seed/fallback de migration.
+
+    Tenta casar primeiro pelo valor exato da categoria escolhida na amostra/projeto
+    (um sub-item de CATEGORIA_INTERESSE_OPTIONS, ex: "body_splash_colonia"), e só então
+    pelo grupo pai (ex: "perfumaria"). Necessário porque alguns sub-itens têm categoria
+    própria no registro de SKU mesmo pertencendo a outro grupo na taxonomia comercial —
+    ex: "body_splash_colonia" é sub-item do grupo "perfumaria" em CATEGORIA_INTERESSE_OPTIONS,
+    mas tem CAT3 próprio ("BSP", Body Splash) no registro de SKU; resolver só pelo grupo
+    geraria PFM (Perfumaria) errado pra esse caso.
+
+    Retorna None se nenhuma categoria ativa correspondente for encontrada.
+    """
+    if not categoria:
+        return None
+
+    ativas = await db.categorias.find(
+        {"tenant_id": tenant_id, "status": "ativa"}, {"_id": 0, "cat3": 1, "nome": 1}
+    ).to_list(500)
+    if not ativas:
+        return None
+    by_name = {_normalize_categoria_key(c["nome"]): c["cat3"] for c in ativas}
+
+    candidatos = [categoria]
+    for grupo, subitens in CATEGORIA_INTERESSE_OPTIONS.items():
+        if categoria in subitens:
+            candidatos.append(grupo)
+            break
+
+    for candidato in candidatos:
+        key = _normalize_categoria_key(candidato)
+        if key in by_name:
+            return by_name[key]
+        for nome_norm, cat3 in by_name.items():
+            if nome_norm in key or key in nome_norm:
+                return cat3
+    return None
+
+
+async def _check_sku_dependency_chain(sample: dict, tenant_id: str, variacao: Optional[dict] = None) -> str:
     """
     R25: Validate full dependency chain before generating SKU.
     Raises HTTPException 409 with the first missing prerequisite.
     Chain: Categoria exists → Cliente com CLI4 → CGI assinado → Projeto →
-           Amostra aprovada (define categoria) → Pedido de Industrialização aprovado
+           Amostra/Variação aprovada (define categoria) → Pedido de Industrialização aprovado
+    Retorna o CAT3 resolvido (reaproveitado pelo caller na montagem do código do SKU,
+    garantindo que a checagem e a geração usam exatamente a mesma resolução).
     """
     cliente_id = sample.get("cliente_id")
     projeto_id = sample.get("projeto_id")
@@ -3944,17 +3947,9 @@ async def _check_sku_dependency_chain(sample: dict, tenant_id: str) -> None:
     if not categoria:
         project = await db.crm_projects.find_one({"id": projeto_id, "tenant_id": tenant_id}, {"_id": 0})
         categoria = (project or {}).get("categoria", "")
-    cat3 = cat3_from_categoria(categoria)
-    if cat3 == "GEN":
-        raise HTTPException(status_code=409, detail=f"[R25] Categoria '{categoria}' não possui CAT3 mapeado — cadastre a categoria antes de gerar o SKU")
-
-    cat_doc = await db.categorias.find_one({"tenant_id": tenant_id, "cat3": cat3}, {"_id": 0})
-    if not cat_doc or cat_doc.get("status") != "ativa":
-        status_msg = f"status: {cat_doc.get('status', 'não encontrada')}" if cat_doc else "não cadastrada"
-        raise HTTPException(
-            status_code=409,
-            detail=f"[R25] Categoria CAT3={cat3} ({status_msg}) — só categorias ativas podem gerar SKU"
-        )
+    cat3 = await resolve_cat3_from_categoria(categoria, tenant_id)
+    if not cat3:
+        raise HTTPException(status_code=409, detail=f"[R25] Categoria '{categoria}' não possui CAT3 ativo cadastrado — solicite a categoria antes de gerar o SKU")
 
     # 3. CGI assinado (contratos vinculados ao cliente/projeto)
     cgi = await db.contratos.find_one(
@@ -3967,8 +3962,14 @@ async def _check_sku_dependency_chain(sample: dict, tenant_id: str) -> None:
             detail="[R25] CGI (Contrato Geral de Industrialização) não assinado — assine o contrato antes de gerar o SKU"
         )
 
-    # 4. Amostra em stage 'aprovada' (already guaranteed by caller, but validate explicitly)
-    if sample.get("stage") != "aprovada":
+    # 4. Amostra (ou variação, quando geração é por variação — R11) aprovada
+    if variacao is not None:
+        if variacao.get("status") != "aprovada":
+            raise HTTPException(
+                status_code=409,
+                detail=f"[R25] Variação deve estar com status 'aprovada' — atual: {variacao.get('status')}"
+            )
+    elif sample.get("stage") != "aprovada":
         raise HTTPException(
             status_code=409,
             detail=f"[R25] Amostra deve estar em stage 'aprovada' — atual: {sample.get('stage')}"
@@ -3983,6 +3984,8 @@ async def _check_sku_dependency_chain(sample: dict, tenant_id: str) -> None:
             detail=f"[R25] Projeto deve estar em 'pedido_aprovado' — atual: {proj_stage}"
         )
 
+    return cat3
+
 
 async def _create_sku_from_sample(sample: dict, user: dict) -> dict:
     """
@@ -3991,23 +3994,23 @@ async def _create_sku_from_sample(sample: dict, user: dict) -> dict:
     """
     tenant_id = sample["tenant_id"]
 
-    # R25: dependency chain
+    # R25: dependency chain — cat3 resolvido aqui é reaproveitado abaixo, garantindo que a
+    # checagem e a geração do código usam exatamente a mesma resolução (db.categorias).
     try:
-        await _check_sku_dependency_chain(sample, tenant_id)
+        cat3 = await _check_sku_dependency_chain(sample, tenant_id)
     except HTTPException as exc:
         logger.warning(f"SKU generation blocked for sample {sample['id']}: {exc.detail}")
         return {"blocked": True, "reason": exc.detail}
 
-    # Resolve category
+    # Resolve category (só p/ campos legados cat2/categoria abaixo — cat3 já resolvido acima)
     project = await db.crm_projects.find_one({"id": sample["projeto_id"]}, {"_id": 0})
     categoria = sample.get("categoria") or (project.get("categoria") if project else "") or ""
 
-    # New format: [CAT3]-[CLI4]-[SEQ4]
-    cat3 = cat3_from_categoria(categoria)
     client = await db.crm_clients.find_one({"id": sample["cliente_id"], "tenant_id": tenant_id}, {"_id": 0})
     cli4 = normalise_cli4(client.get("cli4") or client.get("nome_empresa", ""))
     seq = await next_sku_per_pair_v2(tenant_id, cat3, cli4)
     codigo = build_sku_code_v2(cat3, cli4, seq)
+    _assert_valid_sku_code(codigo)
 
     # Legacy fields preserved for backward compat queries
     cat2 = cat2_from_categoria(categoria)
@@ -4073,6 +4076,129 @@ async def _create_sku_from_sample(sample: dict, user: dict) -> dict:
     return sku
 
 
+async def _create_sku_from_variacao_v2(sample: dict, variacao: dict, user: dict) -> dict:
+    """
+    Geração de SKU no ponto real onde o cliente aprova (POST .../resultado-cliente) —
+    formato novo [CAT3]-[CLI4]-[SEQ4] (R11), valida a cadeia R25 completa (agora
+    verificando o status da própria variação, não o stage — geralmente desatualizado —
+    da amostra), e auto-cria/reaproveita o Produto-Pai da família (R24).
+
+    Substitui _create_sku_from_variacao (formato antigo, sem validação, nunca chamada
+    pelo front) — ver RELATORIO_BETA_FIXES.md / auditoria de SKU.
+    """
+    tenant_id = sample["tenant_id"]
+
+    try:
+        cat3 = await _check_sku_dependency_chain(sample, tenant_id, variacao=variacao)
+    except HTTPException as exc:
+        logger.warning(f"SKU generation blocked for variação {variacao['id']}: {exc.detail}")
+        return {"blocked": True, "reason": exc.detail}
+
+    project = await db.crm_projects.find_one({"id": sample["projeto_id"]}, {"_id": 0})
+    categoria = sample.get("categoria") or (project.get("categoria") if project else "") or ""
+
+    client = await db.crm_clients.find_one({"id": sample["cliente_id"], "tenant_id": tenant_id}, {"_id": 0})
+    cli4 = normalise_cli4(client.get("cli4") or client.get("nome_empresa", ""))
+    seq = await next_sku_per_pair_v2(tenant_id, cat3, cli4)
+    codigo = build_sku_code_v2(cat3, cli4, seq)
+    _assert_valid_sku_code(codigo)
+
+    # Legacy fields preserved for backward compat queries
+    cat2 = cat2_from_categoria(categoria)
+    raw_cli3 = client.get("cli3") or client.get("nome_empresa", "")
+    cli3 = normalise_cli3(raw_cli3)
+
+    now = _now_iso()
+    sku_id = _new_id()
+    nome_base = sample.get("nome_amostra", "") or sample.get("nome_produto", "")
+
+    sku = {
+        "id": sku_id,
+        "tenant_id": tenant_id,
+        "codigo_interno": codigo,
+        "cat3": cat3,
+        "cli4": cli4,
+        "cat2": cat2,
+        "cli3": cli3,
+        "nome_produto": f"{nome_base} - {variacao.get('codigo', '')}".strip(" -"),
+        "categoria": categoria,
+        "formula_vinculada": "",
+        "cliente_id": sample["cliente_id"],
+        "cliente_nome": sample.get("cliente_nome", ""),
+        "projeto_id": sample["projeto_id"],
+        "projeto_nome": sample.get("projeto_nome", ""),
+        "amostra_id": sample["id"],
+        "amostra_variacao_id": variacao["id"],
+        "descricao_aplicacao": variacao.get("descricao_aplicacao", ""),
+        "produto_pai_id": None,
+        "preco_unitario": variacao.get("custo_fragrancia") or 0.0,
+        "moq": 0,
+        "anvisa": {"numero": "", "validade": None},
+        "status": "ativo",
+        "descontinuado_motivo": None,
+        "descontinuado_em": None,
+        "descontinuado_por": None,
+        "historico_pedidos": [],
+        "data_ultimo_pedido": None,
+        "frequencia_media_recompra_dias": 0,
+        "medias_producao": {
+            "media_geral_unh": None,
+            "media_12m_unh": None,
+            "media_3m_unh": None,
+            "media_1m_unh": None,
+            "meta_unh": None,
+            "ajuste_percentual": 0,
+            "meta_set_by": None,
+            "meta_set_at": None,
+            "historico_producao": [],
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await db.skus.insert_one(sku)
+    sku.pop("_id", None)
+
+    # Atualizar variação com SKU ID
+    await db.crm_samples.update_one(
+        {"id": sample["id"], "variacoes.id": variacao["id"]},
+        {"$set": {"variacoes.$.sku_id": sku_id, "variacoes.$.gera_sku": True}}
+    )
+
+    # R23: freeze cli4 after first SKU
+    if client and not client.get("cli4_congelado"):
+        await db.crm_clients.update_one(
+            {"id": sample["cliente_id"], "tenant_id": tenant_id},
+            {"$set": {"cli4_congelado": True, "updated_at": now}},
+        )
+
+    # R24: auto-cria/reaproveita o Produto-Pai da família (mesmo cliente + mesmo nome
+    # base, case-insensitive) e vincula o SKU como uma nova apresentação. Volume/embalagem
+    # ficam em branco por ora — amostra/variação ainda não têm campo estruturado de volume;
+    # preenchido manualmente depois, quando a tela de Produto-Pai existir (Fase 2).
+    try:
+        produto_pai = await find_or_create_produto_pai(
+            nome=nome_base,
+            cliente_id=sample["cliente_id"],
+            tenant_id=tenant_id,
+            user_id=user["id"],
+            user_name=user.get("name", ""),
+        )
+        await _vincular_sku_ao_produto_pai_internal(
+            produto_pai_id=produto_pai["id"],
+            sku_id=sku_id,
+            tenant_id=tenant_id,
+        )
+        sku["produto_pai_id"] = produto_pai["id"]
+    except HTTPException as exc:
+        # Não bloqueia a geração do SKU em si — o vínculo pode ser feito manualmente
+        # depois. Loga pra investigação, mas o SKU já foi criado e é válido.
+        logger.error(f"SKU {codigo} criado mas falhou ao vincular Produto-Pai: {exc.detail}")
+
+    logger.info(f"Auto-created SKU {codigo} from variação {variacao.get('codigo')} (sample {sample['id']})")
+    return sku
+
+
 @crm_router.get("/skus")
 async def list_skus(
     request: Request,
@@ -4093,6 +4219,18 @@ async def list_skus(
         ]
 
     skus = await db.skus.find(query, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+    # Regra de exibição: SKU nunca "pelado" — anexa nome do Produto-Pai (família) pra
+    # cada SKU que já tiver o vínculo (apresentacao/volume ficam no próprio doc do SKU).
+    pai_ids = list({s["produto_pai_id"] for s in skus if s.get("produto_pai_id")})
+    if pai_ids:
+        pais = await db.produtos_pai.find(
+            {"tenant_id": user["tenant_id"], "id": {"$in": pai_ids}}, {"_id": 0, "id": 1, "nome": 1}
+        ).to_list(len(pai_ids))
+        pai_nome_by_id = {p["id"]: p["nome"] for p in pais}
+        for s in skus:
+            s["produto_pai_nome"] = pai_nome_by_id.get(s.get("produto_pai_id"))
+
     return skus
 
 

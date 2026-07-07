@@ -283,11 +283,14 @@ def suggest_cli4_candidates(nome: str) -> List[str]:
     word_letters = ["".join(c for c in w if c.isalpha()) for w in words if any(c.isalpha() for c in w)]
     all_letters = "".join(word_letters)
 
+    # Ordem prioriza padrões que soam mais "legíveis" como sigla de marca (3 letras da
+    # 1ª palavra + inicial da 2ª, ex: "Miss Rose" -> MISR) antes do bloco corrido de 4
+    # letras (ex: MISS) — mesmo conjunto de candidatos de antes, só reordenado.
     candidates: List[str] = []
-    if all_letters:
-        candidates.append(all_letters[:4].ljust(4, "X"))
     if len(word_letters) >= 2 and len(word_letters[0]) >= 3:
         candidates.append((word_letters[0][:3] + word_letters[1][0]).ljust(4, "X"))
+    if all_letters:
+        candidates.append(all_letters[:4].ljust(4, "X"))
     if len(word_letters) >= 2:
         candidates.append((word_letters[0][:2] + word_letters[1][:2]).ljust(4, "X"))
     initials = "".join(w[0] for w in word_letters if w)

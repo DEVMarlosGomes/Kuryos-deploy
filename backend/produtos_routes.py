@@ -49,6 +49,31 @@ async def create_produtos_indexes():
     await db.bom_versoes.create_index([("tenant_id", 1), ("sku_id", 1), ("vigente_desde", -1)])
 
 
+async def find_or_create_produto_pai(
+    *, nome: str, cliente_id: str, tenant_id: str, user_id: str, user_name: str,
+) -> dict:
+    """Usada pela geração automática de SKU (crm_routes.py): reaproveita o Produto-Pai
+    existente do mesmo cliente com o mesmo nome (case-insensitive), ou cria um novo se
+    for a 1ª apresentação dessa família. Sem passo manual — decisão de produto: SKU
+    novo nunca fica sem Produto-Pai."""
+    import re
+    nome = (nome or "").strip()
+    existing = await db.produtos_pai.find_one(
+        {
+            "tenant_id": tenant_id,
+            "cliente_id": cliente_id,
+            "nome": {"$regex": f"^{re.escape(nome)}$", "$options": "i"},
+        },
+        {"_id": 0},
+    )
+    if existing:
+        return existing
+    return await _create_produto_pai_internal(
+        nome=nome, cliente_id=cliente_id, tenant_id=tenant_id,
+        user_id=user_id, user_name=user_name,
+    )
+
+
 # ======================================================================
 #   SCHEMAS
 # ======================================================================
@@ -170,19 +195,18 @@ async def get_produto_pai(produto_pai_id: str, request: Request):
     return doc
 
 
-@produtos_router.post("/produtos-pai", status_code=201)
-async def create_produto_pai(data: ProdutoPaiCreate, request: Request):
-    """
-    Cria um Produto-Pai (Família de Produto).
-    A fórmula/bulk é definida aqui e compartilhada entre todas as apresentações.
-    """
-    user = await _get_current_user(request)
-    require_roles(user, PD_FULL)
-
-    if not data.nome.strip():
+async def _create_produto_pai_internal(
+    *, nome: str, cliente_id: str, tenant_id: str, user_id: str, user_name: str,
+    descricao: str = "", composicao_bulk: Optional[List[dict]] = None,
+) -> dict:
+    """Núcleo de criação de Produto-Pai, sem as partes HTTP (auth/roles) — reutilizável
+    tanto pelo endpoint POST /produtos-pai quanto pela geração automática de SKU (R24/R11:
+    auto-cria o Produto-Pai na 1ª geração de SKU de uma família nova, ver crm_routes.py)."""
+    nome = (nome or "").strip()
+    if not nome:
         raise HTTPException(status_code=400, detail="Nome do produto-pai é obrigatório")
 
-    client = await db.crm_clients.find_one({"id": data.cliente_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    client = await db.crm_clients.find_one({"id": cliente_id, "tenant_id": tenant_id}, {"_id": 0})
     if not client:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
@@ -191,13 +215,13 @@ async def create_produto_pai(data: ProdutoPaiCreate, request: Request):
 
     doc = {
         "id": produto_pai_id,
-        "tenant_id": user["tenant_id"],
-        "nome": data.nome.strip(),
-        "descricao": data.descricao.strip(),
-        "cliente_id": data.cliente_id,
+        "tenant_id": tenant_id,
+        "nome": nome,
+        "descricao": (descricao or "").strip(),
+        "cliente_id": cliente_id,
         "cliente_nome": client.get("nome_empresa", ""),
-        "created_by": user["id"],
-        "created_by_name": user.get("name", ""),
+        "created_by": user_id,
+        "created_by_name": user_name,
         "created_at": now,
         "updated_at": now,
     }
@@ -206,17 +230,17 @@ async def create_produto_pai(data: ProdutoPaiCreate, request: Request):
 
     # Insert bulk BOM items
     bom_items_inserted = []
-    for item in data.composicao_bulk:
+    for item in (composicao_bulk or []):
         bom_item = {
             "id": _new_id(),
-            "tenant_id": user["tenant_id"],
+            "tenant_id": tenant_id,
             "produto_pai_id": produto_pai_id,
             "sku_id": None,
             "camada": "bulk",
             "versao": 1,
             "vigente": True,
             "vigente_desde": now,
-            **item.model_dump(),
+            **item,
             "created_at": now,
         }
         await db.bom_items.insert_one(bom_item)
@@ -225,8 +249,27 @@ async def create_produto_pai(data: ProdutoPaiCreate, request: Request):
 
     doc["composicao_bulk"] = bom_items_inserted
     doc["skus_filhos"] = []
-    logger.info(f"Produto-Pai criado: {produto_pai_id} — {data.nome}")
+    logger.info(f"Produto-Pai criado: {produto_pai_id} — {nome}")
     return doc
+
+
+@produtos_router.post("/produtos-pai", status_code=201)
+async def create_produto_pai(data: ProdutoPaiCreate, request: Request):
+    """
+    Cria um Produto-Pai (Família de Produto).
+    A fórmula/bulk é definida aqui e compartilhada entre todas as apresentações.
+    """
+    user = await _get_current_user(request)
+    require_roles(user, PD_FULL)
+    return await _create_produto_pai_internal(
+        nome=data.nome,
+        cliente_id=data.cliente_id,
+        tenant_id=user["tenant_id"],
+        user_id=user["id"],
+        user_name=user.get("name", ""),
+        descricao=data.descricao,
+        composicao_bulk=[item.model_dump() for item in data.composicao_bulk],
+    )
 
 
 @produtos_router.patch("/produtos-pai/{produto_pai_id}")
@@ -250,21 +293,19 @@ async def update_produto_pai(produto_pai_id: str, data: ProdutoPaiUpdate, reques
     return await db.produtos_pai.find_one({"tenant_id": user["tenant_id"], "id": produto_pai_id}, {"_id": 0})
 
 
-@produtos_router.post("/produtos-pai/{produto_pai_id}/skus/{sku_id}")
-async def vincular_sku_ao_produto_pai(
-    produto_pai_id: str, sku_id: str, data: ApresentacaoVinculo, request: Request
-):
-    """
-    Vincula um SKU-filho ao Produto-Pai e define sua composição de embalagem (Composição 2).
-    """
-    user = await _get_current_user(request)
-    require_roles(user, PD_FULL)
-
-    pai = await db.produtos_pai.find_one({"tenant_id": user["tenant_id"], "id": produto_pai_id}, {"_id": 0})
+async def _vincular_sku_ao_produto_pai_internal(
+    *, produto_pai_id: str, sku_id: str, tenant_id: str,
+    volume: Optional[float] = None, unidade_volume: str = "ml",
+    embalagem_primaria: str = "", qtd_envase: Optional[float] = None,
+    composicao_embalagem: Optional[List[dict]] = None,
+) -> dict:
+    """Núcleo do vínculo SKU-filho -> Produto-Pai, sem as partes HTTP — reutilizável pelo
+    endpoint e pela geração automática de SKU (auto-vínculo na criação, R11/R24)."""
+    pai = await db.produtos_pai.find_one({"tenant_id": tenant_id, "id": produto_pai_id}, {"_id": 0})
     if not pai:
         raise HTTPException(status_code=404, detail="Produto-Pai não encontrado")
 
-    sku = await db.skus.find_one({"tenant_id": user["tenant_id"], "id": sku_id}, {"_id": 0})
+    sku = await db.skus.find_one({"tenant_id": tenant_id, "id": sku_id}, {"_id": 0})
     if not sku:
         raise HTTPException(status_code=404, detail="SKU não encontrado")
 
@@ -272,14 +313,14 @@ async def vincular_sku_ao_produto_pai(
 
     # Update SKU to link to produto-pai
     await db.skus.update_one(
-        {"id": sku_id, "tenant_id": user["tenant_id"]},
+        {"id": sku_id, "tenant_id": tenant_id},
         {"$set": {
             "produto_pai_id": produto_pai_id,
             "apresentacao": {
-                "volume": data.volume,
-                "unidade_volume": data.unidade_volume,
-                "embalagem_primaria": data.embalagem_primaria,
-                "qtd_envase": data.qtd_envase,
+                "volume": volume,
+                "unidade_volume": unidade_volume,
+                "embalagem_primaria": embalagem_primaria,
+                "qtd_envase": qtd_envase,
             },
             "updated_at": now,
         }},
@@ -287,17 +328,17 @@ async def vincular_sku_ao_produto_pai(
 
     # Insert embalagem BOM items (versão 1, vigente)
     bom_items_inserted = []
-    for item in data.composicao_embalagem:
+    for item in (composicao_embalagem or []):
         bom_item = {
             "id": _new_id(),
-            "tenant_id": user["tenant_id"],
+            "tenant_id": tenant_id,
             "produto_pai_id": produto_pai_id,
             "sku_id": sku_id,
             "camada": "embalagem",
             "versao": 1,
             "vigente": True,
             "vigente_desde": now,
-            **item.model_dump(),
+            **item,
             "created_at": now,
         }
         await db.bom_items.insert_one(bom_item)
@@ -308,6 +349,27 @@ async def vincular_sku_ao_produto_pai(
         "msg": f"SKU {sku['codigo_interno']} vinculado ao produto-pai {produto_pai_id}",
         "composicao_embalagem": bom_items_inserted,
     }
+
+
+@produtos_router.post("/produtos-pai/{produto_pai_id}/skus/{sku_id}")
+async def vincular_sku_ao_produto_pai(
+    produto_pai_id: str, sku_id: str, data: ApresentacaoVinculo, request: Request
+):
+    """
+    Vincula um SKU-filho ao Produto-Pai e define sua composição de embalagem (Composição 2).
+    """
+    user = await _get_current_user(request)
+    require_roles(user, PD_FULL)
+    return await _vincular_sku_ao_produto_pai_internal(
+        produto_pai_id=produto_pai_id,
+        sku_id=sku_id,
+        tenant_id=user["tenant_id"],
+        volume=data.volume,
+        unidade_volume=data.unidade_volume,
+        embalagem_primaria=data.embalagem_primaria,
+        qtd_envase=data.qtd_envase,
+        composicao_embalagem=[item.model_dump() for item in data.composicao_embalagem],
+    )
 
 
 # ======================================================================

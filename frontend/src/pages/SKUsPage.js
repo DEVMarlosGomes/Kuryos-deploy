@@ -315,8 +315,14 @@ export default function SKUsPage() {
                     <TableRow key={sku.id} className="cursor-pointer hover:bg-accent/50"
                       onClick={() => openSku(sku)}>
                       <TableCell className="font-mono font-semibold text-primary text-sm">{sku.codigo_interno}</TableCell>
-                      <TableCell className="max-w-[200px]">
+                      <TableCell className="max-w-[220px]">
                         <p className="truncate text-sm">{sku.nome_produto}</p>
+                        {(sku.produto_pai_nome || sku.apresentacao?.volume) && (
+                          <p className="truncate text-[10px] text-muted-foreground">
+                            {sku.produto_pai_nome || "—"}
+                            {sku.apresentacao?.volume ? ` · ${sku.apresentacao.volume}${sku.apresentacao.unidade_volume || "ml"}` : ""}
+                          </p>
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">{sku.cliente_nome}</TableCell>
                       <TableCell>
@@ -364,6 +370,14 @@ export default function SKUsPage() {
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                       <Badge variant="outline" className="text-xs">{selectedSku.cliente_nome}</Badge>
                       {selectedSku.categoria && <Badge variant="outline" className="text-xs">{selectedSku.categoria}</Badge>}
+                      {selectedSku.produto_pai_nome && (
+                        <Badge variant="secondary" className="text-xs">Família: {selectedSku.produto_pai_nome}</Badge>
+                      )}
+                      {selectedSku.apresentacao?.volume && (
+                        <Badge variant="secondary" className="text-xs">
+                          {selectedSku.apresentacao.volume}{selectedSku.apresentacao.unidade_volume || "ml"}
+                        </Badge>
+                      )}
                       <span className={`text-[10px] font-semibold px-2 py-0.5 rounded uppercase ${STATUS_COLORS[selectedSku.status] || ""}`}>
                         {selectedSku.status}
                       </span>
