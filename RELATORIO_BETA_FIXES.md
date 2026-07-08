@@ -174,3 +174,24 @@ Os outros 8 achados da auditoria (severidade menor — banner de qualificação 
 1. **Cadastro de categorias CAT3** (`db.categorias`, fluxo de aprovação) não tem nenhuma tela no front — só é possível criar categoria hoje via migration/DB direto. Sem isso, o formato de SKU novo (CAT3-CLI4-SEQ) não pode receber categorias novas pela UI.
 2. **B12** não foi 100% reproduzido — as guardas defensivas aplicadas cobrem todo ponto identificado como frágil, mas se a tela branca voltar a acontecer, capturar o console do navegador no momento exato ajuda a achar o gatilho real.
 3. Rodar a suíte `backend/tests/` completa contra staging antes do próximo deploy — não foi possível executá-la nesta sessão (sem servidor/MongoDB disponível no ambiente local).
+
+---
+
+## Governança de geração de SKU — Fase 1 (auditoria pré-produção separada)
+
+Auditoria pedida à parte, especificamente sobre a geração de SKU, antes de liberar a feature aos clientes. Não fazia parte dos 26 itens do hotfix — commit próprio (`feat(sku): governanca de geracao de SKU - Fase 1`).
+
+**Achado crítico:** a geração de SKU estava completamente desconectada do fluxo real de aprovação. O único endpoint que o front chama quando o cliente aprova uma variação (`POST /crm/samples/{id}/variacoes/{id}/resultado-cliente`) nunca disparava nenhuma função de geração de SKU — as duas que existiam só eram acionadas por endpoints que nenhuma tela do front invoca (código morto).
+
+**Corrigido nesta Fase 1:**
+- Geração de SKU conectada ao ponto real de aprovação, no formato novo `CAT3-CLI4-SEQ4`, com a cadeia de validação R25 completa (cliente com CLI4 → categoria ativa → CGI assinado → amostra/variação aprovada → projeto em pedido aprovado).
+- CAT3 resolvido dinamicamente do registro de categorias governado (`db.categorias`), não mais de um dicionário Python hardcoded desatualizado.
+- Produto-Pai (entidade que já existia pronta no backend, sem uso) passa a ser auto-criado/reaproveitado a cada SKU novo, com a apresentação (volume) vinculada.
+- Caminho antigo de geração (formato descontinuado, sem validação nenhuma) removido.
+- SKUsPage.js passa a mostrar Produto-Pai + apresentação junto do código (nunca mais "SKU pelado").
+
+**Limitação crítica descoberta (fora do escopo deste fix — precisa de decisão/implementação separada antes da geração de SKU funcionar de ponta a ponta):** a cadeia de validação exige um CGI "assinado"/"vigente" em `db.contratos`, mas o módulo de contratos só tem endpoint para **gerar** o contrato (grava `status="gerado"`) — não existe nenhum endpoint que marque um contrato como assinado. Hoje, essa checagem da cadeia é estruturalmente impossível de satisfazer via API. **Geração de SKU vai continuar bloqueada em produção até esse gap ser resolvido.**
+
+**Fase 2 (não implementada, avaliar depois):** tela de solicitação/aprovação de categoria nova; tela de gestão de Produto-Pai/BOM; varredura da regra "nunca SKU pelado" em todas as telas (hoje só SKUsPage.js); verificação de compatibilidade do hífen com Omie/Bling (sem integração fiscal no código hoje para testar).
+
+Testes novos em `backend/tests/test_sku_governance.py` (mesma limitação de ambiente do restante do relatório — não executados nesta sessão).
