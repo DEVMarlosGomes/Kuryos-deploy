@@ -7,8 +7,8 @@ Collections: pd_requests, pd_request_status_history, pd_developments,
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from pydantic import AliasChoices, BaseModel, Field
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone, timedelta
 import uuid
 import io
@@ -111,6 +111,133 @@ STATUS_LABELS = {
     "COMPLETED": "Concluído",
     "REJECTED": "Rejeitado",
 }
+
+PD_STATUS_TO_KANBAN = {
+    "OPEN": "solicitado",
+    "IN_PROGRESS": "em_desenvolvimento",
+    "IN_TESTS": "em_testes",
+    "WAITING_APPROVAL": "aguardando_aprovacao",
+    "REJECTED": "retrabalho_interno",
+    "APPROVED": "aprovado",
+    "COMPLETED": "concluido",
+}
+
+PD_KANBAN_LABELS = {
+    "solicitado": "Solicitado",
+    "em_desenvolvimento": "Em Desenvolvimento",
+    "em_testes": "Em Testes",
+    "aguardando_aprovacao": "Aguardando Aprovação",
+    "retrabalho_interno": "Retrabalho",
+    "aprovado": "Aprovado",
+    "concluido": "Concluído",
+}
+
+
+def _has_meaningful_lab_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        return any(_has_meaningful_lab_value(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_meaningful_lab_value(v) for v in value)
+    return True
+
+
+async def _sync_request_status_to_pipeline(
+    *,
+    req_id: str,
+    tenant_id: str,
+    new_status: str,
+    linked_pd_card_id: Optional[str] = None,
+    user: Optional[dict] = None,
+    movement_comment: str = "",
+):
+    kanban_status = PD_STATUS_TO_KANBAN.get(new_status)
+    if not kanban_status:
+        return None
+
+    card = await db.pd_cards.find_one(
+        {"pd_request_id": req_id, "tenant_id": tenant_id},
+        {"_id": 0},
+    )
+    if not card and linked_pd_card_id:
+        card = await db.pd_cards.find_one(
+            {"id": linked_pd_card_id, "tenant_id": tenant_id},
+            {"_id": 0},
+        )
+    if not card:
+        return None
+
+    now = now_iso()
+    old_card_status = card.get("status_pd", "")
+    update_doc: Dict[str, Any] = {
+        "$set": {
+            "status_pd": kanban_status,
+            "pd_request_id": req_id,
+            "updated_at": now,
+        }
+    }
+    if user and old_card_status != kanban_status:
+        update_doc["$push"] = {
+            "historico_movimentacoes": {
+                "de": old_card_status,
+                "para": kanban_status,
+                "data": now,
+                "usuario": user.get("name", ""),
+                "usuario_id": user["id"],
+                "observacao": movement_comment or f"Sincronizado automaticamente pela requisição P&D: {STATUS_LABELS.get(new_status, new_status)}",
+                "sincronizado_pd_request": True,
+            }
+        }
+
+    await db.pd_cards.update_one(
+        {"id": card["id"], "tenant_id": tenant_id},
+        update_doc,
+    )
+
+    updated_card = {**card, "status_pd": kanban_status, "pd_request_id": req_id, "updated_at": now}
+    if user and old_card_status != kanban_status:
+        historico = list(card.get("historico_movimentacoes") or [])
+        historico.append(update_doc["$push"]["historico_movimentacoes"])
+        updated_card["historico_movimentacoes"] = historico
+
+    if _broadcast_event and old_card_status != kanban_status:
+        await _broadcast_event(
+            tenant_id,
+            "pd_card_moved",
+            {"card": updated_card, "from_status": old_card_status, "to_status": kanban_status},
+        )
+
+    if updated_card.get("amostra_variacao_id"):
+        await db.crm_samples.update_one(
+            {
+                "id": updated_card.get("amostra_id"),
+                "tenant_id": tenant_id,
+                "variacoes.id": updated_card["amostra_variacao_id"],
+            },
+            {"$set": {
+                "variacoes.$.status_pd_raw": kanban_status,
+                "variacoes.$.status_pd_label": PD_KANBAN_LABELS.get(kanban_status, kanban_status),
+                "updated_at": now,
+            }}
+        )
+        if _broadcast_event:
+            await _broadcast_event(
+                tenant_id,
+                "crm_sample_pd_synced",
+                {
+                    "amostra_id": updated_card.get("amostra_id"),
+                    "variacao_id": updated_card["amostra_variacao_id"],
+                    "status_pd_raw": kanban_status,
+                    "status_pd_label": PD_KANBAN_LABELS.get(kanban_status, kanban_status),
+                }
+            )
+
+    return updated_card
 
 # ============ PYDANTIC MODELS ============
 
@@ -324,6 +451,17 @@ def _build_stability_conditions(started_at: str) -> List[Dict[str, Any]]:
             "status": "pending",
         })
     return conditions
+
+
+def _allowed_stability_checkpoints(study: Optional[Dict[str, Any]], condition_code: str) -> List[int]:
+    for condition in (study or {}).get("conditions", []):
+        if condition.get("code") == condition_code:
+            checkpoints = list(condition.get("checkpoints") or [])
+            if checkpoints:
+                return checkpoints
+            break
+    template = _stability_condition_map().get(condition_code) or {}
+    return list(template.get("checkpoints") or STABILITY_CHECKPOINTS)
 
 
 def _normalize_stability_parameters(parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -1414,83 +1552,17 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
         {"$set": {"status": new_status, "updated_at": now_iso()}}
     )
 
-    # Sync kanban pipeline card so the column position reflects the new status
-    _PD_STATUS_TO_KANBAN = {
-        "OPEN": "solicitado",
-        "IN_PROGRESS": "em_desenvolvimento",
-        "IN_TESTS": "em_testes",
-        "WAITING_APPROVAL": "aguardando_aprovacao",
-        "REJECTED": "retrabalho_interno",
-        "APPROVED": "aprovado",
-        "COMPLETED": "concluido",
-    }
-    kanban_status = _PD_STATUS_TO_KANBAN.get(new_status)
-    if kanban_status:
-        _card_result = await db.pd_cards.update_one(
-            {"pd_request_id": req_id, "tenant_id": user["tenant_id"]},
-            {"$set": {"status_pd": kanban_status, "updated_at": now_iso()}}
+    try:
+        await _sync_request_status_to_pipeline(
+            req_id=req_id,
+            tenant_id=user["tenant_id"],
+            new_status=new_status,
+            linked_pd_card_id=pd_req.get("linked_pd_card_id"),
+            user=user,
+            movement_comment=data.comment or f"Status alterado para {STATUS_LABELS.get(new_status, new_status)}",
         )
-        # Fallback: card created before pd_request_id was linked — find via linked_pd_card_id on the request
-        if _card_result.matched_count == 0 and pd_req.get("linked_pd_card_id"):
-            await db.pd_cards.update_one(
-                {"id": pd_req["linked_pd_card_id"], "tenant_id": user["tenant_id"]},
-                {"$set": {"status_pd": kanban_status, "pd_request_id": req_id, "updated_at": now_iso()}}
-            )
-        # Push the moved card to the pipeline board live — without this, the transition above
-        # only takes effect on the board after a manual page refresh (B6).
-        if _broadcast_event:
-            _moved_card = await db.pd_cards.find_one(
-                {"pd_request_id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0}
-            )
-            if _moved_card:
-                await _broadcast_event(
-                    user["tenant_id"],
-                    "pd_card_moved",
-                    {"card": _moved_card, "from_status": current, "to_status": new_status},
-                )
-        # Reverse-sync: push the new stage label back into the CRM sample variation
-        try:
-            pd_card = await db.pd_cards.find_one(
-                {"pd_request_id": req_id, "tenant_id": user["tenant_id"]},
-                {"_id": 0, "amostra_id": 1, "amostra_variacao_id": 1}
-            )
-            if pd_card and pd_card.get("amostra_variacao_id"):
-                amostra_id = pd_card["amostra_id"]
-                variacao_id = pd_card["amostra_variacao_id"]
-                _PD_KANBAN_LABELS = {
-                    "solicitado": "Solicitado",
-                    "em_desenvolvimento": "Em Desenvolvimento",
-                    "em_testes": "Em Testes",
-                    "aguardando_aprovacao": "Aguardando Aprovação",
-                    "retrabalho_interno": "Retrabalho",
-                    "aprovado": "Aprovado",
-                    "concluido": "Concluído",
-                }
-                await db.crm_samples.update_one(
-                    {
-                        "id": amostra_id,
-                        "tenant_id": user["tenant_id"],
-                        "variacoes.id": variacao_id,
-                    },
-                    {"$set": {
-                        "variacoes.$.status_pd_raw": kanban_status,
-                        "variacoes.$.status_pd_label": _PD_KANBAN_LABELS.get(kanban_status, kanban_status),
-                        "updated_at": now_iso(),
-                    }}
-                )
-                if _broadcast_event:
-                    await _broadcast_event(
-                        user["tenant_id"],
-                        "crm_sample_pd_synced",
-                        {
-                            "amostra_id": amostra_id,
-                            "variacao_id": variacao_id,
-                            "status_pd_raw": kanban_status,
-                            "status_pd_label": _PD_KANBAN_LABELS.get(kanban_status, kanban_status),
-                        }
-                    )
-        except Exception as exc:
-            logger.warning(f"PD→CRM reverse sync failed for req {req_id}: {exc}")
+    except Exception as exc:
+        logger.warning(f"PD→CRM reverse sync failed for req {req_id}: {exc}")
 
     await db.pd_request_status_history.insert_one({
         "id": new_id(),
@@ -2226,6 +2298,42 @@ async def save_lab_results(dev_id: str, data: LabResultsUpdate, request: Request
             epa_changed_fields=list(dict.fromkeys(epa_changed_fields)),
             source_changes=source_changes,
         )
+
+    has_meaningful_results = any(
+        _has_meaningful_lab_value(update_data.get(field))
+        for field in ("estabilidade", "ph", "viscosidade", "sensorial", "compatibilidade")
+    )
+    if has_meaningful_results and dev.get("pd_request_id"):
+        pd_req = await db.pd_requests.find_one(
+            {"id": dev["pd_request_id"], "tenant_id": user["tenant_id"]},
+            {"_id": 0},
+        )
+        if pd_req and pd_req.get("status") in {"OPEN", "IN_PROGRESS"}:
+            now = now_iso()
+            previous_status = pd_req.get("status")
+            await db.pd_requests.update_one(
+                {"id": pd_req["id"], "tenant_id": user["tenant_id"]},
+                {"$set": {"status": "IN_TESTS", "updated_at": now}},
+            )
+            await _sync_request_status_to_pipeline(
+                req_id=pd_req["id"],
+                tenant_id=user["tenant_id"],
+                new_status="IN_TESTS",
+                linked_pd_card_id=pd_req.get("linked_pd_card_id"),
+                user=user,
+                movement_comment="Movido automaticamente para testes após registro de resultados laboratoriais",
+            )
+            await db.pd_request_status_history.insert_one({
+                "id": new_id(),
+                "pd_request_id": pd_req["id"],
+                "from_status": previous_status,
+                "to_status": "IN_TESTS",
+                "changed_by": user["id"],
+                "changed_by_name": user["name"],
+                "comment": "Movido automaticamente para Em Testes após registro de resultados laboratoriais",
+                "created_at": now,
+            })
+
     return results
 
 # ============ STABILITY STUDIES ============
@@ -2311,6 +2419,14 @@ async def create_stability_reading(study_id: str, data: StabilityReadingCreate, 
     parameters = _normalize_stability_parameters(data.parameters)
     if not parameters:
         raise HTTPException(status_code=400, detail="Informe ao menos um parametro valido da leitura")
+
+    allowed_checkpoints = _allowed_stability_checkpoints(study, data.condition_code)
+    if data.day_offset not in allowed_checkpoints:
+        allowed_label = ", ".join(f"D{checkpoint}" if checkpoint not in (1, 2) else ("D24h" if checkpoint == 1 else "D48h") for checkpoint in allowed_checkpoints)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Checkpoint invalido para esta condicao. Permitidos: {allowed_label}",
+        )
 
     existing = await db.pd_stability_readings.find_one(
         {
@@ -3824,6 +3940,58 @@ class FichaTecnicaAnaliseUpsert(BaseModel):
     resp_tecnico: Optional[str] = None
     status_aprovacao: Optional[str] = None  # "aprovado" | "reprovado"
 
+
+def _build_ficha_default_params_from_lab_results(lab_results: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    return {
+        "aspecto": {
+            "especificacao": "",
+            "resultado": str(lab_results.get("sensorial", {}).get("aspecto") or ""),
+            "pa": "",
+        },
+        "cor": {
+            "especificacao": "",
+            "resultado": str(lab_results.get("sensorial", {}).get("cor") or ""),
+            "pa": "",
+        },
+        "densidade": {"especificacao": "", "resultado": "", "pa": ""},
+        "odor": {
+            "especificacao": "",
+            "resultado": str(lab_results.get("sensorial", {}).get("odor") or ""),
+            "pa": "",
+        },
+        "ph": {
+            "especificacao": "",
+            "resultado": str(lab_results.get("ph", {}).get("valor_medido") or ""),
+            "pa": "",
+        },
+        "teor_alcool": {"especificacao": "", "resultado": "", "pa": ""},
+    }
+
+
+def _merge_ficha_analise_with_lab_defaults(
+    analise: Dict[str, Any],
+    lab_results: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+    merged = dict(analise or {})
+    auto_filled: Dict[str, bool] = {}
+    defaults = _build_ficha_default_params_from_lab_results(lab_results or {})
+
+    for key, default_value in defaults.items():
+        existing = merged.get(key)
+        if not isinstance(existing, dict):
+            existing = {"especificacao": "", "resultado": str(existing or ""), "pa": ""}
+        merged_value = {
+            "especificacao": str(existing.get("especificacao") or ""),
+            "resultado": str(existing.get("resultado") or ""),
+            "pa": str(existing.get("pa") or ""),
+        }
+        if not merged_value["resultado"] and default_value["resultado"]:
+            merged_value["resultado"] = default_value["resultado"]
+            auto_filled[key] = True
+        merged[key] = merged_value
+
+    return merged, auto_filled
+
 @pd_router.get("/requests/{req_id}/ficha-tecnica-ui")
 async def get_ficha_tecnica_ui(req_id: str, request: Request):
     user = await get_current_user(request)
@@ -3838,12 +4006,18 @@ async def get_ficha_tecnica_ui(req_id: str, request: Request):
         if formula:
             items = await db.pd_formula_items.find({"formula_id": formula["id"]}, {"_id": 0}).to_list(200)
     analise = await db.pd_ficha_tecnica.find_one({"pd_request_id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0}) or {}
+    lab_results = {}
+    if dev:
+        lab_results = await db.pd_lab_results.find_one({"development_id": dev["id"]}, {"_id": 0}) or {}
+    analise_merged, auto_filled = _merge_ficha_analise_with_lab_defaults(analise, lab_results)
     return {
         "request": pd_req,
         "development": dev,
         "formula": formula,
         "formula_items": items,
-        "analise": analise,
+        "analise": analise_merged,
+        "lab_results": lab_results,
+        "auto_filled": auto_filled,
     }
 
 @pd_router.put("/requests/{req_id}/ficha-tecnica-ui")
@@ -4099,6 +4273,143 @@ class CatalogItemUpdate(BaseModel):
     observacoes: Optional[str] = None
     fornecedores: Optional[List[FornecedorCatalog]] = None
 
+
+def _normalize_catalog_lookup(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _catalog_match_keys(doc: Dict[str, Any]) -> set[str]:
+    return {
+        key
+        for key in (
+            _normalize_catalog_lookup(doc.get("nome")),
+            _normalize_catalog_lookup(doc.get("codigo_interno")),
+            _normalize_catalog_lookup(doc.get("inci")),
+        )
+        if key
+    }
+
+
+def _dedupe_catalog_suppliers(suppliers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for supplier in suppliers:
+        name_key = _normalize_catalog_lookup(supplier.get("nome"))
+        code_key = _normalize_catalog_lookup(supplier.get("codigo"))
+        key = f"{name_key}|{code_key}"
+        if not name_key:
+            continue
+        existing = deduped.get(key)
+        if not existing:
+            deduped[key] = supplier
+            continue
+        existing_price = existing.get("preco_rs_kg")
+        next_price = supplier.get("preco_rs_kg")
+        if existing_price in (None, 0) and next_price not in (None, 0):
+            deduped[key] = supplier
+    return sorted(
+        deduped.values(),
+        key=lambda supplier: (
+            supplier.get("preco_rs_kg") is None,
+            supplier.get("preco_rs_kg") if supplier.get("preco_rs_kg") is not None else float("inf"),
+            supplier.get("nome", ""),
+        ),
+    )
+
+
+async def _enrich_catalog_items_with_procurement_data(
+    tenant_id: str,
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not items:
+        return items
+
+    materiais = await db.materiais.find(
+        {"tenant_id": tenant_id, "tipo2": "MP"},
+        {"_id": 0, "nome": 1, "codigo_interno": 1, "fornecedores": 1, "subtipo": 1},
+    ).to_list(5000)
+    homologacao_mps = await db.homologacao_mps.find(
+        {"tenant_id": tenant_id, "status": "homologada"},
+        {"_id": 0, "nome": 1, "codigo_interno": 1, "inci": 1, "fornecedor_id": 1, "fornecedor_nome": 1, "funcao": 1, "custo_referencia": 1, "unidade": 1},
+    ).to_list(5000)
+
+    materiais_by_key: Dict[str, List[Dict[str, Any]]] = {}
+    for material in materiais:
+        for key in _catalog_match_keys(material):
+            materiais_by_key.setdefault(key, []).append(material)
+
+    homologacao_by_key: Dict[str, List[Dict[str, Any]]] = {}
+    for mp in homologacao_mps:
+        for key in _catalog_match_keys(mp):
+            homologacao_by_key.setdefault(key, []).append(mp)
+
+    enriched_items = []
+    for original in items:
+        item = dict(original)
+        match_keys = _catalog_match_keys(item)
+        merged_suppliers = list(item.get("fornecedores") or [])
+        existing_keys = {
+            (_normalize_catalog_lookup(supplier.get("nome")), _normalize_catalog_lookup(supplier.get("codigo")))
+            for supplier in merged_suppliers
+        }
+
+        matched_materials = []
+        matched_homologacoes = []
+        for key in match_keys:
+            matched_materials.extend(materiais_by_key.get(key, []))
+            matched_homologacoes.extend(homologacao_by_key.get(key, []))
+
+        for material in matched_materials:
+            if not item.get("categoria") and material.get("subtipo"):
+                item["categoria"] = material["subtipo"]
+            for supplier in material.get("fornecedores") or []:
+                if supplier.get("status_homologacao") != "homologado":
+                    continue
+                supplier_doc = {
+                    "nome": supplier.get("fornecedor_nome", ""),
+                    "codigo": supplier.get("codigo_fornecedor") or None,
+                    "preco_rs_kg": supplier.get("preco_por_unidade") if (supplier.get("moeda") or "BRL") == "BRL" else None,
+                    "moeda": supplier.get("moeda", "BRL"),
+                    "origem": "materiais_homologados",
+                }
+                supplier_key = (
+                    _normalize_catalog_lookup(supplier_doc.get("nome")),
+                    _normalize_catalog_lookup(supplier_doc.get("codigo")),
+                )
+                if supplier_key in existing_keys or not supplier_key[0]:
+                    continue
+                merged_suppliers.append(supplier_doc)
+                existing_keys.add(supplier_key)
+
+        for mp in matched_homologacoes:
+            if not item.get("inci") and mp.get("inci"):
+                item["inci"] = mp["inci"]
+            if not item.get("codigo_interno") and mp.get("codigo_interno"):
+                item["codigo_interno"] = mp["codigo_interno"]
+            if not item.get("categoria") and mp.get("funcao"):
+                item["categoria"] = mp["funcao"]
+            supplier_doc = {
+                "nome": mp.get("fornecedor_nome", ""),
+                "codigo": mp.get("fornecedor_id") or None,
+                "preco_rs_kg": mp.get("custo_referencia"),
+                "moeda": "BRL",
+                "origem": "mp_homologada",
+            }
+            supplier_key = (
+                _normalize_catalog_lookup(supplier_doc.get("nome")),
+                _normalize_catalog_lookup(supplier_doc.get("codigo")),
+            )
+            if supplier_key in existing_keys or not supplier_key[0]:
+                continue
+            merged_suppliers.append(supplier_doc)
+            existing_keys.add(supplier_key)
+
+        item["fornecedores"] = _dedupe_catalog_suppliers(merged_suppliers)
+        if not item.get("fornecedor") and item["fornecedores"]:
+            item["fornecedor"] = item["fornecedores"][0].get("nome", "")
+        enriched_items.append(item)
+
+    return enriched_items
+
 class InternalResearchCreate(BaseModel):
     project_name: str
     description: Optional[str] = None
@@ -4202,6 +4513,7 @@ async def create_catalog_item(data: CatalogItemCreate, request: Request):
         "created_by_name": user["name"],
         "created_at": now_iso(),
     }
+    item = (await _enrich_catalog_items_with_procurement_data(user["tenant_id"], [item]))[0]
     await db.pd_catalog.insert_one(item)
     item.pop("_id", None)
     return item
@@ -4221,39 +4533,7 @@ async def list_catalog(request: Request, q: Optional[str] = None, categoria: Opt
     if categoria:
         query["categoria"] = categoria
     items = await db.pd_catalog.find(query, {"_id": 0}).sort("nome", 1).to_list(1000)
-
-    # B4/B5/B14: banco de custos (pd_catalog) e cadastro de materiais/fornecedores
-    # (db.materiais) sao coleções separadas sem ligação nenhuma - ao escolher uma MP no
-    # banco de custos, o usuário não via os fornecedores homologados já cadastrados em
-    # Compras e tinha que redigitar fornecedor/preço na mão. Enriquecemos aqui os
-    # fornecedores homologados de db.materiais (casamento exato por nome, case-insensitive)
-    # como sugestões adicionais — sem alterar o que já está salvo no próprio pd_catalog.
-    names = [it["nome"] for it in items if it.get("nome")]
-    if names:
-        materiais = await db.materiais.find(
-            {"tenant_id": user["tenant_id"], "nome": {"$in": names}},
-            {"_id": 0, "nome": 1, "fornecedores": 1},
-        ).to_list(2000)
-        materiais_by_name = {m["nome"].strip().lower(): m for m in materiais if m.get("nome")}
-        for item in items:
-            material = materiais_by_name.get((item.get("nome") or "").strip().lower())
-            if not material:
-                continue
-            existing_names = {(f.get("nome") or "").strip().lower() for f in (item.get("fornecedores") or [])}
-            homologados = [
-                {
-                    "nome": f.get("fornecedor_nome", ""),
-                    "preco_rs_kg": f.get("preco_por_unidade") if (f.get("moeda") or "BRL") == "BRL" else None,
-                    "moeda": f.get("moeda", "BRL"),
-                    "origem": "materiais_homologados",
-                }
-                for f in (material.get("fornecedores") or [])
-                if f.get("status_homologacao") == "homologado"
-                and (f.get("fornecedor_nome") or "").strip().lower() not in existing_names
-            ]
-            if homologados:
-                item["fornecedores"] = [*(item.get("fornecedores") or []), *homologados]
-    return items
+    return await _enrich_catalog_items_with_procurement_data(user["tenant_id"], items)
 
 @pd_router.get("/catalog/{item_id}")
 async def get_catalog_item(item_id: str, request: Request):
@@ -4261,7 +4541,7 @@ async def get_catalog_item(item_id: str, request: Request):
     item = await db.pd_catalog.find_one({"id": item_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not item:
         raise HTTPException(status_code=404, detail="Ingrediente não encontrado no banco de custos")
-    return item
+    return (await _enrich_catalog_items_with_procurement_data(user["tenant_id"], [item]))[0]
 
 @pd_router.put("/catalog/{item_id}")
 async def update_catalog_item(item_id: str, data: CatalogItemUpdate, request: Request):
@@ -4302,6 +4582,14 @@ async def update_catalog_item(item_id: str, data: CatalogItemUpdate, request: Re
         ignored_fields=["preco_rs_kg", "moeda", "unidade", "categoria", "observacoes", "ultima_atualizacao", "atualizado_por", "atualizado_por_id", "fornecedores", "codigo_interno"],
     )
 
+    enriched_item = (await _enrich_catalog_items_with_procurement_data(
+        user["tenant_id"],
+        [{**existing, **update_fields}],
+    ))[0]
+    update_fields["fornecedores"] = enriched_item.get("fornecedores", [])
+    if not update_fields.get("fornecedor"):
+        update_fields["fornecedor"] = enriched_item.get("fornecedor", "")
+
     await db.pd_catalog.update_one({"id": item_id}, {"$set": update_fields})
     item = await db.pd_catalog.find_one({"id": item_id}, {"_id": 0})
     if any(field in update_fields for field in ("nome", "inci", "fornecedor")):
@@ -4317,7 +4605,7 @@ async def update_catalog_item(item_id: str, data: CatalogItemUpdate, request: Re
             epa_changed_fields=epa_fields,
             source_changes=source_changes,
         )
-    return item
+    return (await _enrich_catalog_items_with_procurement_data(user["tenant_id"], [item]))[0]
 
 @pd_router.delete("/catalog/{item_id}")
 async def delete_catalog_item(item_id: str, request: Request):
@@ -5693,17 +5981,17 @@ async def save_formula_cost_version(formula_id: str, data: FormulaCostVersionCre
 # ============================================================
 
 class ProcedurePhaseCreate(BaseModel):
-    nome_fase: str
+    nome_fase: str = Field(validation_alias=AliasChoices("nome_fase", "titulo"))
     temperatura: Optional[str] = None
-    instrucoes: Optional[str] = None
-    observacoes: Optional[str] = None
+    instrucoes: Optional[str] = Field(default=None, validation_alias=AliasChoices("instrucoes", "descricao"))
+    observacoes: Optional[str] = Field(default=None, validation_alias=AliasChoices("observacoes", "notas"))
     ordem: int = 0
 
 class ProcedurePhaseUpdate(BaseModel):
-    nome_fase: Optional[str] = None
+    nome_fase: Optional[str] = Field(default=None, validation_alias=AliasChoices("nome_fase", "titulo"))
     temperatura: Optional[str] = None
-    instrucoes: Optional[str] = None
-    observacoes: Optional[str] = None
+    instrucoes: Optional[str] = Field(default=None, validation_alias=AliasChoices("instrucoes", "descricao"))
+    observacoes: Optional[str] = Field(default=None, validation_alias=AliasChoices("observacoes", "notas"))
     ordem: Optional[int] = None
 
 class PhasesReorder(BaseModel):
@@ -5753,6 +6041,11 @@ async def update_formula_phase(phase_id: str, data: ProcedurePhaseUpdate, reques
     if not existing:
         raise HTTPException(status_code=404, detail="Fase não encontrada")
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    for text_field in ("nome_fase", "temperatura", "instrucoes", "observacoes"):
+        if text_field in updates:
+            updates[text_field] = (updates[text_field] or "").strip() or None
+    if updates.get("nome_fase") is None:
+        updates.pop("nome_fase", None)
     updates["updated_at"] = now_iso()
     await db.formula_procedure_phases.update_one({"id": phase_id}, {"$set": updates})
     return {**existing, **updates}

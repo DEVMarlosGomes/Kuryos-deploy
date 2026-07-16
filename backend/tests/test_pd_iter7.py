@@ -227,9 +227,11 @@ class TestStabilityStudy:
         assert r.status_code == 200
         data = r.json()
         constants = data["constants"]
-        assert len(constants["conditions"]) == 9
+        assert len(constants["conditions"]) == 5
         assert len(constants["parameters"]) == 12
-        assert constants["checkpoints"] == [0, 7, 15, 30, 45, 60, 90]
+        assert constants["checkpoints"] == [1, 2, 7, 30, 60, 90]
+        freeze = next(condition for condition in constants["conditions"] if condition["code"] == "freeze_thaw")
+        assert freeze["checkpoints"] == [1, 2, 7, 15]
         print(f"Conditions: {len(constants['conditions'])}, Params: {len(constants['parameters'])}")
 
     def test_study_idempotent(self, admin_session, pd_card_id):
@@ -247,10 +249,10 @@ class TestStabilityStudy:
         conditions = data["constants"]["conditions"]
         cond_id = conditions[0]["code"]
 
-        # Register reading D0 for first condition
+        # Register first reading at D24h for the first condition
         reading_data = {
             "condition_code": cond_id,
-            "day_offset": 0,
+            "day_offset": 1,
             "parameters": {
                 "aspecto": "Normal",
                 "cor": "Branco",

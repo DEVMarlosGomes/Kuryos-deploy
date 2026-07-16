@@ -1,0 +1,17 @@
+2026-07-16 19:38:22,431 - server - WARNING - Using local development defaults for: MONGO_URL, DB_NAME, JWT_SECRET
+INFO:     Started server process [20616]
+INFO:     Waiting for application startup.
+2026-07-16 19:38:27,283 - server - WARNING - No EMERGENT_LLM_KEY for storage
+2026-07-16 19:38:28,195 - crm_routes - INFO - CRM module initialized
+2026-07-16 19:38:28,206 - estoque_routes - INFO - Estoque module initialized
+2026-07-16 19:38:29,083 - cq_routes - INFO - CQ module initialized
+2026-07-16 19:38:31,817 - cq_routes - INFO - CQ module indexes created
+2026-07-16 19:38:32,501 - workflow_engine - INFO - Workflow engine initialized
+2026-07-16 19:38:32,520 - workflow_routes - INFO - Workflow routes initialized
+2026-07-16 19:38:32,521 - categorias_routes - INFO - Categorias module initialized
+2026-07-16 19:38:32,639 - fragrancias_routes - INFO - Fragrâncias module initialized
+2026-07-16 19:38:32,885 - materiais_routes - INFO - Materiais module initialized
+2026-07-16 19:38:33,106 - produtos_routes - INFO - Produtos module initialized
+2026-07-16 19:38:44,121 - server - INFO - CRM Kuryos API started
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)

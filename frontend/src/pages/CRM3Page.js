@@ -29,6 +29,7 @@ function CRMSubNav({ active }) {
         { id: "clients", label: "Clientes", path: "/crm/clients" },
         { id: "projects", label: "Projetos", path: "/crm/projects" },
         { id: "samples", label: "Amostras", path: "/crm/samples" },
+        { id: "orders", label: "Pedidos", path: "/orders" },
     ];
     return (
         <div className="flex items-center gap-1 mb-5 border-b border-border pb-3">
@@ -357,7 +358,7 @@ export default function CRM3Page() {
         percentual_fragrancia: "",
         referencia_fragrancia: "",
         custo_fragrancia: "",
-        custo_fragrancia_currency: "BRL",
+        custo_fragrancia_currency: "USD",
         observacoes_especificas: ""
     }]);
 
@@ -375,7 +376,7 @@ export default function CRM3Page() {
                     percentual_fragrancia: v.percentual_fragrancia ? parseFloat(v.percentual_fragrancia) : null,
                     referencia_fragrancia: v.referencia_fragrancia,
                     custo_fragrancia: v.custo_fragrancia ? parseFloat(v.custo_fragrancia) : null,
-                    custo_fragrancia_currency: v.custo_fragrancia_currency || "BRL",
+                    custo_fragrancia_currency: v.custo_fragrancia_currency || "USD",
                     observacoes_especificas: v.observacoes_especificas,
                 }))
             };
@@ -387,6 +388,7 @@ export default function CRM3Page() {
                 percentual_fragrancia: "",
                 referencia_fragrancia: "",
                 custo_fragrancia: "",
+                custo_fragrancia_currency: "USD",
                 observacoes_especificas: ""
             }]);
             loadSamples();
@@ -1098,7 +1100,7 @@ export default function CRM3Page() {
                                             <Label className="text-xs">Custo Fragrância</Label>
                                             <CurrencyInput
                                                 value={v.custo_fragrancia}
-                                                currency={v.custo_fragrancia_currency || "BRL"}
+                                                currency={v.custo_fragrancia_currency || "USD"}
                                                 onValueChange={(val) => {
                                                     const list = [...newVariacoes];
                                                     list[idx].custo_fragrancia = val;
@@ -1135,6 +1137,7 @@ export default function CRM3Page() {
                                 percentual_fragrancia: "",
                                 referencia_fragrancia: "",
                                 custo_fragrancia: "",
+                                custo_fragrancia_currency: "USD",
                                 observacoes_especificas: ""
                             }])}
                         >

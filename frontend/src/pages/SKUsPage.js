@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,18 +24,6 @@ const STATUS_COLORS = {
   suspenso: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
   descontinuado: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
 };
-
-const SKU_CATEGORIES = [
-  { code: "CA", label: "Capilares",              examples: "Shampoo, Condicionador, Máscara, Leave-in, Coloração" },
-  { code: "SC", label: "Skin Care / Dermo",       examples: "Hidratante facial, Sérum, Protetor solar, Vitamina C" },
-  { code: "HP", label: "Higiene Pessoal",         examples: "Sabonete líquido, Gel de banho, Desodorante, Talco" },
-  { code: "PF", label: "Perfumaria",              examples: "Perfume, EDP, Body Splash, Colônia, Home spray" },
-  { code: "MQ", label: "Maquiagem",               examples: "Base, BB Cream, Blush, Batom, Delineador" },
-  { code: "CO", label: "Corporal / Spa",          examples: "Óleo corporal, Manteiga, Esfoliante, Gel redutor" },
-  { code: "IN", label: "Infantil",                examples: "Shampoo infantil, Sabonete infantil, Loção" },
-  { code: "MA", label: "Masculino",               examples: "Bálsamo pós-barba, Gel de barbear, Hidratante facial" },
-  { code: "PS", label: "Profissional / Salão",    examples: "Tratamento intensivo, Progressiva profissional" },
-];
 
 function fmtNum(v, decimals = 1) {
   if (v === null || v === undefined) return "—";
@@ -110,12 +98,23 @@ export default function SKUsPage() {
     }
   }, [selectedSku?.id]);
 
+  const skuCategoryOptions = useMemo(() => {
+    const entries = skus
+      .map((sku) => {
+        const code = sku.cat3 || sku.codigo_interno?.split("-")[0];
+        if (!code) return null;
+        return [code, { code, label: sku.categoria || code }];
+      })
+      .filter(Boolean);
+    return Array.from(new Map(entries).values()).sort((a, b) => a.code.localeCompare(b.code));
+  }, [skus]);
+
   const loadSkus = useCallback(async () => {
     try {
       const params = {};
       if (search) params.search = search;
       if (filterStatus !== "all") params.status = filterStatus;
-      if (filterCat !== "all") params.cat2 = filterCat;
+      if (filterCat !== "all") params.cat3 = filterCat;
       const { data } = await api.get("/crm/skus", { params });
       setSkus(data);
     } catch {
@@ -229,7 +228,7 @@ export default function SKUsPage() {
               <PackageCheck className="h-6 w-6" /> SKUs / Catálogo
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              {skus.length} SKU(s) · formato <span className="font-mono text-xs">CAT2-CLI3-SEQ4</span> (ex: PF-FEB-0001)
+              {skus.length} SKU(s) · formato <span className="font-mono text-xs">CAT3-CLI4-SEQ4</span> (ex: BSP-ACME-0001)
             </p>
           </div>
           <button
@@ -243,17 +242,20 @@ export default function SKUsPage() {
         {/* Category reference panel */}
         {showCatRef && (
           <div className="border rounded-xl p-4 bg-muted/30">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Tabela CAT2</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Tabela CAT3</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {SKU_CATEGORIES.map(cat => (
+              {skuCategoryOptions.map(cat => (
                 <div key={cat.code} className="flex gap-2 text-sm p-2 rounded-lg hover:bg-accent/30">
                   <span className="font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded text-xs shrink-0 self-start mt-0.5">{cat.code}</span>
                   <div>
                     <p className="text-xs font-medium">{cat.label}</p>
-                    <p className="text-[10px] text-muted-foreground">{cat.examples}</p>
+                    <p className="text-[10px] text-muted-foreground">Código CAT3 ativo encontrado no catálogo.</p>
                   </div>
                 </div>
               ))}
+              {skuCategoryOptions.length === 0 && (
+                <p className="text-sm text-muted-foreground">Nenhum CAT3 encontrado nos SKUs atuais.</p>
+              )}
             </div>
           </div>
         )}
@@ -273,7 +275,7 @@ export default function SKUsPage() {
             <SelectTrigger className="w-40"><SelectValue placeholder="Categoria" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todas categorias</SelectItem>
-              {SKU_CATEGORIES.map(c => <SelectItem key={c.code} value={c.code}>{c.code} — {c.label}</SelectItem>)}
+              {skuCategoryOptions.map(c => <SelectItem key={c.code} value={c.code}>{c.code} — {c.label}</SelectItem>)}
             </SelectContent>
           </Select>
           <div className="relative flex-1 min-w-[200px]">
@@ -327,7 +329,7 @@ export default function SKUsPage() {
                       <TableCell className="text-muted-foreground text-sm">{sku.cliente_nome}</TableCell>
                       <TableCell>
                         <span className="font-mono text-[11px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
-                          {sku.cat2 || sku.codigo_interno?.split("-")[0] || "—"}
+                          {sku.cat3 || sku.codigo_interno?.split("-")[0] || "—"}
                         </span>
                       </TableCell>
                       <TableCell>
@@ -455,14 +457,14 @@ export default function SKUsPage() {
                   <div>
                     <p className="text-xs text-muted-foreground mb-1.5">Código gerado</p>
                     <div className="flex items-center gap-2 font-mono text-sm flex-wrap">
-                      <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">{selectedSku.cat2 || "??"}</span>
+                      <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">{selectedSku.cat3 || "???"}</span>
                       <span className="text-muted-foreground">-</span>
-                      <span className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 px-2 py-0.5 rounded font-bold">{selectedSku.cli3 || "???"}</span>
+                      <span className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 px-2 py-0.5 rounded font-bold">{selectedSku.cli4 || "????"}</span>
                       <span className="text-muted-foreground">-</span>
                       <span className="bg-muted px-2 py-0.5 rounded text-muted-foreground">{selectedSku.codigo_interno?.split("-")[2] || "????"}</span>
                       <span className="text-[10px] text-muted-foreground ml-1">= {selectedSku.codigo_interno}</span>
                     </div>
-                    <p className="text-[10px] text-muted-foreground mt-1">CAT2 · CLI3 · SEQ4 — imutável após geração</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">CAT3 · CLI4 · SEQ4 — imutável após geração</p>
                   </div>
                   <Separator />
                   <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">ANVISA</h4>

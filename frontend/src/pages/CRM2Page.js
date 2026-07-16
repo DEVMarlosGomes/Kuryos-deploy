@@ -2,7 +2,16 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "@/lib/api";
 import { formatApiError } from "@/lib/formatError";
 import { indexToLetters } from "@/lib/letters";
-import { fmtPriceDisplay, fmtVolumeDisplay, parsePriceInput, parseVolumeInput } from "@/lib/masks";
+import {
+    DEFAULT_PRICE_DISPLAY,
+    DEFAULT_VOLUME_DISPLAY,
+    fmtPriceDisplay,
+    fmtVolumeDisplay,
+    parsePriceInput,
+    parseVolumeInput,
+    seedPriceDisplay,
+    seedVolumeDisplay,
+} from "@/lib/masks";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +27,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import SampleBatchModal from "@/components/SampleBatchModal";
 import PropostaPedidoModal from "@/components/PropostaPedidoModal";
+import DirectOrderModal from "@/components/DirectOrderModal";
 import ViewSwitcher from "@/components/ViewSwitcher";
 import FilterBar, { applyFilters } from "@/components/FilterBar";
 import ListView from "@/components/ListView";
@@ -28,6 +38,7 @@ function CRMSubNav({ active }) {
         { id: "clients", label: "Clientes", path: "/crm/clients" },
         { id: "projects", label: "Projetos", path: "/crm/projects" },
         { id: "samples", label: "Amostras", path: "/crm/samples" },
+        { id: "orders", label: "Pedidos", path: "/orders" },
     ];
     return (
         <div className="flex items-center gap-1 mb-5 border-b border-border pb-3">
@@ -95,7 +106,7 @@ function createEmptySample() {
         sensorial: "",
         ph: "",
         observacao_tecnica: "",
-        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "BRL", observacoes_especificas: "" }],
+        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "USD", observacoes_especificas: "" }],
     };
 }
 
@@ -124,6 +135,7 @@ export default function CRM2Page() {
     const [batchSamples, setBatchSamples] = useState([createEmptySample()]);
     const [batchProjetoData, setBatchProjetoData] = useState(null);
     const [showPropostaPedido, setShowPropostaPedido] = useState(false);
+    const [showDirectOrder, setShowDirectOrder] = useState(false);
     const [propostaProjeto, setPropostaProjeto] = useState(null);
     const [showArchiveDialog, setShowArchiveDialog] = useState(false);
     const [pendingArchiveProject, setPendingArchiveProject] = useState(null);
@@ -294,7 +306,7 @@ export default function CRM2Page() {
             percentual_fragrancia: "",
             referencia_fragrancia: "",
             custo_fragrancia: "",
-            custo_fragrancia_currency: "BRL",
+            custo_fragrancia_currency: "USD",
             observacoes_especificas: "",
         });
         setBatchSamples(next);
@@ -527,8 +539,19 @@ export default function CRM2Page() {
                         {filteredProjects.length} de {projects.length} projetos
                     </p>
                 </div>
-                <ViewSwitcher value={view} onChange={setView} testIdPrefix="crm2" />
+                <div className="flex items-center gap-2">
+                    <Button variant="outline" onClick={() => setShowDirectOrder(true)}>
+                        <ShoppingCart className="h-4 w-4 mr-2" /> Pedido Direto
+                    </Button>
+                    <ViewSwitcher value={view} onChange={setView} testIdPrefix="crm2" />
+                </div>
             </div>
+
+            <DirectOrderModal
+                open={showDirectOrder}
+                onOpenChange={setShowDirectOrder}
+                onCreated={(order) => navigate(`/orders/${order.id}`)}
+            />
 
             <FilterBar
                 filters={filters}
@@ -797,9 +820,10 @@ export default function CRM2Page() {
                                             <Input
                                                 type="text"
                                                 inputMode="decimal"
-                                                placeholder="0,00"
+                                                placeholder={DEFAULT_PRICE_DISPLAY}
                                                 value={faixaPrecoDisplay}
                                                 onChange={(event) => setFaixaPrecoDisplay(event.target.value)}
+                                                onFocus={() => setFaixaPrecoDisplay((current) => seedPriceDisplay(current))}
                                                 onBlur={(event) => {
                                                     const formatted = fmtPriceDisplay(event.target.value);
                                                     setFaixaPrecoDisplay(formatted);
@@ -812,9 +836,10 @@ export default function CRM2Page() {
                                             <Input
                                                 type="text"
                                                 inputMode="numeric"
-                                                placeholder="15.000"
+                                                placeholder={DEFAULT_VOLUME_DISPLAY}
                                                 value={volumeEstimadoDisplay}
                                                 onChange={(event) => setVolumeEstimadoDisplay(event.target.value)}
+                                                onFocus={() => setVolumeEstimadoDisplay((current) => seedVolumeDisplay(current))}
                                                 onBlur={(event) => {
                                                     const formatted = fmtVolumeDisplay(event.target.value);
                                                     setVolumeEstimadoDisplay(formatted);

@@ -104,6 +104,359 @@ const TEST_FIELDS = {
   ],
 };
 
+const normalizeLookup = (value = "") =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
+const toFiniteNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+function buildSupplierLookup(fornecedores = []) {
+  const byId = new Map();
+  const byName = new Map();
+
+  fornecedores.forEach((fornecedor) => {
+    if (fornecedor?.id) {
+      byId.set(fornecedor.id, fornecedor);
+    }
+    [fornecedor?.razao_social, fornecedor?.nome_fantasia, fornecedor?.codigo_interno].forEach((candidate) => {
+      const key = normalizeLookup(candidate);
+      if (key && !byName.has(key)) {
+        byName.set(key, fornecedor);
+      }
+    });
+  });
+
+  return { byId, byName };
+}
+
+function normalizeSupplierOption(rawSupplier, lookup) {
+  if (!rawSupplier) return null;
+
+  const rawId = rawSupplier.fornecedor_id || rawSupplier.id || "";
+  const rawName =
+    rawSupplier.fornecedor_nome ||
+    rawSupplier.nome ||
+    rawSupplier.razao_social ||
+    rawSupplier.nome_fantasia ||
+    "";
+  const matched =
+    (rawId && lookup.byId.get(rawId)) ||
+    lookup.byName.get(normalizeLookup(rawName)) ||
+    {};
+
+  const razaoSocial =
+    matched.razao_social ||
+    rawSupplier.razao_social ||
+    rawSupplier.fornecedor_nome ||
+    rawSupplier.nome ||
+    matched.nome_fantasia ||
+    rawSupplier.nome_fantasia ||
+    "";
+
+  if (!razaoSocial.trim()) return null;
+
+  return {
+    id: rawId || rawSupplier.codigo || rawSupplier.codigo_fornecedor || normalizeLookup(razaoSocial),
+    nome: razaoSocial,
+    razao_social: matched.razao_social || razaoSocial,
+    nome_fantasia: matched.nome_fantasia || rawSupplier.nome_fantasia || "",
+    codigo: rawSupplier.codigo || rawSupplier.codigo_fornecedor || matched.codigo_interno || "",
+    moeda: String(rawSupplier.moeda || "BRL").toUpperCase(),
+    preco_rs_kg:
+      toFiniteNumber(rawSupplier.preco_rs_kg) ??
+      toFiniteNumber(rawSupplier.preco_por_unidade) ??
+      toFiniteNumber(rawSupplier.custo_referencia),
+    unidade: rawSupplier.unidade || rawSupplier.unidade_compra || "kg",
+    status:
+      rawSupplier.status_homologacao ||
+      rawSupplier.status ||
+      matched?.homologacao?.status ||
+      "",
+  };
+}
+
+function dedupeSupplierOptions(suppliers = []) {
+  const byKey = new Map();
+
+  suppliers.forEach((supplier) => {
+    const normalized = normalizeSupplierOption(supplier, { byId: new Map(), byName: new Map() }) || supplier;
+    const key = `${normalized.id || ""}:${normalizeLookup(normalized.razao_social || normalized.nome)}`;
+    if (!key || key === ":") return;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, normalized);
+      return;
+    }
+    const existingPrice = toFiniteNumber(existing.preco_rs_kg);
+    const nextPrice = toFiniteNumber(normalized.preco_rs_kg);
+    if (existingPrice === null && nextPrice !== null) {
+      byKey.set(key, { ...existing, ...normalized });
+    }
+  });
+
+  return [...byKey.values()].sort((a, b) => {
+    const priceA = toFiniteNumber(a.preco_rs_kg);
+    const priceB = toFiniteNumber(b.preco_rs_kg);
+    if (priceA !== null && priceB !== null && priceA !== priceB) return priceA - priceB;
+    if (priceA !== null && priceB === null) return -1;
+    if (priceA === null && priceB !== null) return 1;
+    return (a.razao_social || a.nome || "").localeCompare(b.razao_social || b.nome || "", "pt-BR");
+  });
+}
+
+function buildSupplierDirectoryOptions(fornecedores = []) {
+  const lookup = buildSupplierLookup(fornecedores);
+  return dedupeSupplierOptions(
+    fornecedores
+      .map((fornecedor) =>
+        normalizeSupplierOption(
+          {
+            id: fornecedor.id,
+            razao_social: fornecedor.razao_social,
+            nome_fantasia: fornecedor.nome_fantasia,
+            codigo: fornecedor.codigo_interno,
+            status: fornecedor?.homologacao?.status,
+          },
+          lookup,
+        ),
+      )
+      .filter(Boolean),
+  );
+}
+
+function buildPdIngredientOptions({ catalog = [], materiais = [], homologacaoMps = [], fornecedores = [] }) {
+  const supplierLookup = buildSupplierLookup(fornecedores);
+  const optionsByKey = new Map();
+
+  const ensureOption = ({
+    key,
+    nome,
+    inci = "",
+    codigo_interno = "",
+    unidade = "kg",
+    categoria = "",
+    catalog_id = "",
+    source = "",
+    preco_rs_kg = null,
+  }) => {
+    if (!key || !nome) return null;
+    const existing = optionsByKey.get(key) || {
+      id: catalog_id || key,
+      option_key: key,
+      nome,
+      inci: "",
+      codigo_interno: "",
+      unidade: "kg",
+      categoria: "",
+      catalog_id: "",
+      preco_rs_kg: null,
+      fornecedores: [],
+      source_tags: [],
+    };
+
+    if (!existing.nome && nome) existing.nome = nome;
+    if (!existing.inci && inci) existing.inci = inci;
+    if (!existing.codigo_interno && codigo_interno) existing.codigo_interno = codigo_interno;
+    if (!existing.categoria && categoria) existing.categoria = categoria;
+    if ((!existing.unidade || existing.unidade === "kg") && unidade) existing.unidade = unidade;
+    if (!existing.catalog_id && catalog_id) {
+      existing.catalog_id = catalog_id;
+      existing.id = catalog_id;
+    }
+    if (existing.preco_rs_kg === null && preco_rs_kg !== null) {
+      existing.preco_rs_kg = preco_rs_kg;
+    }
+    if (source && !existing.source_tags.includes(source)) {
+      existing.source_tags.push(source);
+    }
+
+    optionsByKey.set(key, existing);
+    return existing;
+  };
+
+  catalog.forEach((item) => {
+    const option = ensureOption({
+      key: normalizeLookup(item.nome || item.inci || item.codigo_interno),
+      nome: item.nome || item.inci || item.codigo_interno,
+      inci: item.inci || "",
+      codigo_interno: item.codigo_interno || "",
+      unidade: item.unidade || "kg",
+      categoria: item.categoria || "Catálogo",
+      catalog_id: item.id || "",
+      source: "catalogo",
+      preco_rs_kg: toFiniteNumber(item.preco_rs_kg),
+    });
+    if (!option) return;
+    (item.fornecedores || []).forEach((supplier) => {
+      const normalized = normalizeSupplierOption(
+        {
+          nome: supplier.nome,
+          codigo: supplier.codigo,
+          preco_rs_kg: supplier.preco_rs_kg,
+          moeda: supplier.moeda,
+          unidade: item.unidade || "kg",
+        },
+        supplierLookup,
+      );
+      if (normalized) option.fornecedores.push(normalized);
+    });
+  });
+
+  materiais.forEach((item) => {
+    const option = ensureOption({
+      key: normalizeLookup(item.nome || item.codigo_interno),
+      nome: item.nome || item.codigo_interno,
+      codigo_interno: item.codigo_interno || "",
+      unidade: item.unidade_compra || item.unidade_estoque || "kg",
+      categoria: item.subtipo || "Cadastro MP",
+      source: "materiais",
+    });
+    if (!option) return;
+    (item.fornecedores || []).forEach((supplier) => {
+      const normalized = normalizeSupplierOption(
+        {
+          fornecedor_id: supplier.fornecedor_id,
+          fornecedor_nome: supplier.fornecedor_nome,
+          codigo_fornecedor: supplier.codigo_fornecedor,
+          preco_por_unidade: supplier.preco_por_unidade,
+          moeda: supplier.moeda,
+          unidade_compra: supplier.unidade_compra || item.unidade_compra || item.unidade_estoque || "kg",
+          status_homologacao: supplier.status_homologacao,
+        },
+        supplierLookup,
+      );
+      if (normalized) option.fornecedores.push(normalized);
+    });
+  });
+
+  homologacaoMps.forEach((item) => {
+    const option = ensureOption({
+      key: normalizeLookup(item.nome || item.codigo_interno || item.inci),
+      nome: item.nome || item.inci || item.codigo_interno,
+      inci: item.inci || "",
+      codigo_interno: item.codigo_interno || "",
+      unidade: item.unidade || "kg",
+      categoria: item.funcao || "Homologação",
+      source: "homologacao",
+      preco_rs_kg: toFiniteNumber(item.custo_referencia),
+    });
+    if (!option) return;
+    if (item.fornecedor_id || item.fornecedor_nome) {
+      const normalized = normalizeSupplierOption(
+        {
+          fornecedor_id: item.fornecedor_id,
+          fornecedor_nome: item.fornecedor_nome,
+          custo_referencia: item.custo_referencia,
+          moeda: "BRL",
+          unidade: item.unidade || "kg",
+          status: item.status,
+        },
+        supplierLookup,
+      );
+      if (normalized) option.fornecedores.push(normalized);
+    }
+  });
+
+  return [...optionsByKey.values()]
+    .map((option) => ({
+      ...option,
+      fornecedores: dedupeSupplierOptions(option.fornecedores),
+    }))
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+}
+
+function findSupplierByName(suppliers = [], value = "") {
+  const target = normalizeLookup(value);
+  if (!target) return null;
+  return (
+    suppliers.find((supplier) => normalizeLookup(supplier.razao_social || supplier.nome) === target) ||
+    suppliers.find((supplier) => normalizeLookup(supplier.nome_fantasia) === target) ||
+    null
+  );
+}
+
+function usePdMaterialLibrary() {
+  const [catalog, setCatalog] = useState([]);
+  const [materiais, setMateriais] = useState([]);
+  const [homologacaoMps, setHomologacaoMps] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      const [catalogResult, materiaisResult, homologacaoResult, fornecedoresResult] = await Promise.allSettled([
+        api.get("/pd/catalog"),
+        api.get("/cadastros/materiais", { params: { tipo2: "MP", status: "ativo" } }),
+        api.get("/pd/homologacao/mps", { params: { tipo_mp: "FORMULACAO" } }),
+        api.get("/compras/fornecedores", { params: { limit: 500 } }),
+      ]);
+
+      if (!active) return;
+
+      setCatalog(
+        catalogResult.status === "fulfilled" && Array.isArray(catalogResult.value?.data)
+          ? catalogResult.value.data
+          : [],
+      );
+      setMateriais(
+        materiaisResult.status === "fulfilled" && Array.isArray(materiaisResult.value?.data?.materiais)
+          ? materiaisResult.value.data.materiais
+          : [],
+      );
+      setHomologacaoMps(
+        homologacaoResult.status === "fulfilled" && Array.isArray(homologacaoResult.value?.data)
+          ? homologacaoResult.value.data
+          : [],
+      );
+      setFornecedores(
+        fornecedoresResult.status === "fulfilled" && Array.isArray(fornecedoresResult.value?.data?.fornecedores)
+          ? fornecedoresResult.value.data.fornecedores
+          : [],
+      );
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const supplierOptions = useMemo(() => buildSupplierDirectoryOptions(fornecedores), [fornecedores]);
+  const ingredientOptions = useMemo(
+    () => buildPdIngredientOptions({ catalog, materiais, homologacaoMps, fornecedores }),
+    [catalog, materiais, homologacaoMps, fornecedores],
+  );
+
+  const getIngredientOption = useCallback(
+    (ingredientName) => ingredientOptions.find((item) => item.option_key === normalizeLookup(ingredientName)) || null,
+    [ingredientOptions],
+  );
+
+  const getSuppliersForIngredient = useCallback(
+    (ingredientName) => {
+      const ingredient = getIngredientOption(ingredientName);
+      if (ingredient?.fornecedores?.length) {
+        return ingredient.fornecedores;
+      }
+      return supplierOptions;
+    },
+    [getIngredientOption, supplierOptions],
+  );
+
+  return {
+    ingredientOptions,
+    supplierOptions,
+    getIngredientOption,
+    getSuppliersForIngredient,
+  };
+}
+
 export default function PDDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -1169,18 +1522,6 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
         <LockedSection accentColor="bg-amber-500" Icon={Package} title="Amostras Físicas" unlockStage="IN_PROGRESS" />
       )}
 
-      {/* ── ESTABILIDADES ────────────────────────────────── */}
-      {unlocked("IN_TESTS") ? (
-        <div className="border rounded-xl overflow-hidden">
-          <SectionHead accentColor="bg-cyan-500" Icon={TestTube} title="Estabilidades" action={<GoBtn tab="tests" />} />
-          <div className="px-6 py-4">
-            <p className="text-sm text-muted-foreground">Registre e acompanhe os estudos de estabilidade da fórmula.</p>
-          </div>
-        </div>
-      ) : (
-        <LockedSection accentColor="bg-cyan-500" Icon={TestTube} title="Estabilidades" unlockStage="IN_TESTS" />
-      )}
-
       {/* ── FICHA TÉCNICA ────────────────────────────────── */}
       {unlocked("IN_PROGRESS") && hasDev ? (
         <div className="border rounded-xl overflow-hidden">
@@ -1518,6 +1859,7 @@ function ImportFormulaDialog({ open, onOpenChange, devId, onImported }) {
 }
 
 function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
+  const { ingredientOptions, getSuppliersForIngredient } = usePdMaterialLibrary();
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [formulaName, setFormulaName] = useState("");
@@ -1534,22 +1876,27 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
   const [editingItemId, setEditingItemId] = useState(null);
   const [editItemForm, setEditItemForm] = useState({ ingredient_name: "", fornecedor: "", percentage: "", price_per_kg: "", price_usd: "", price_currency: "BRL" });
   const [pendingCatalogItem, setPendingCatalogItem] = useState(null);
-  const [catalog, setCatalog] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showNewVersion, setShowNewVersion] = useState(null); // formula to create new version from
   const [newVersionJustification, setNewVersionJustification] = useState("");
   const [creatingVersion, setCreatingVersion] = useState(false);
 
-  useEffect(() => {
-    api.get("/pd/catalog").then(({ data }) => {
-      setCatalog(Array.isArray(data) ? data : []);
-    }).catch(() => setCatalog([]));
-  }, []);
-
   const filteredCatalog = newItem.ingredient_name
-    ? catalog.filter(c => c.nome.toLowerCase().includes(newItem.ingredient_name.toLowerCase()) ||
-                          (c.inci && c.inci.toLowerCase().includes(newItem.ingredient_name.toLowerCase())))
-    : catalog;
+    ? ingredientOptions.filter((item) =>
+        item.nome.toLowerCase().includes(newItem.ingredient_name.toLowerCase()) ||
+        (item.inci && item.inci.toLowerCase().includes(newItem.ingredient_name.toLowerCase())) ||
+        (item.codigo_interno && item.codigo_interno.toLowerCase().includes(newItem.ingredient_name.toLowerCase())),
+      )
+    : ingredientOptions;
+
+  const newItemSuppliers = useMemo(
+    () => getSuppliersForIngredient(newItem.ingredient_name),
+    [getSuppliersForIngredient, newItem.ingredient_name],
+  );
+  const editItemSuppliers = useMemo(
+    () => getSuppliersForIngredient(editItemForm.ingredient_name),
+    [editItemForm.ingredient_name, getSuppliersForIngredient],
+  );
 
   const supplierRankColor = (rank) => {
     if (rank === 0) return "text-green-700 bg-green-50 border-green-200 hover:bg-green-100";
@@ -1561,14 +1908,14 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
   const pickFromCatalog = (cat) => {
     const fornecedores = (cat.fornecedores || [])
       .slice()
-      .sort((a, b) => (a.preco_rs_kg || 0) - (b.preco_rs_kg || 0));
+      .sort((a, b) => (a.preco_rs_kg ?? Number.MAX_SAFE_INTEGER) - (b.preco_rs_kg ?? Number.MAX_SAFE_INTEGER));
     if (fornecedores.length > 0) {
       setNewItem(p => ({
         ...p,
         ingredient_name: cat.nome,
-        catalog_id: cat.id,
-        price_per_kg: "",
-        price_currency: "BRL",
+        catalog_id: cat.catalog_id || "",
+        price_per_kg: fornecedores[0]?.preco_rs_kg != null ? String(fornecedores[0].preco_rs_kg) : "",
+        price_currency: fornecedores[0]?.moeda || "BRL",
         fornecedor: "",
       }));
       setPendingCatalogItem({ ...cat, fornecedores });
@@ -1576,16 +1923,30 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       setNewItem({
         ingredient_name: cat.nome,
         percentage: newItem.percentage,
-        price_per_kg: String(cat.preco_rs_kg || 0),
+        price_per_kg: cat.preco_rs_kg != null ? String(cat.preco_rs_kg) : "",
         price_currency: "BRL",
         fornecedor: cat.fornecedor || "",
         phase: newItem.phase,
         function: newItem.function,
-        catalog_id: cat.id,
+        catalog_id: cat.catalog_id || "",
       });
       setPendingCatalogItem(null);
     }
     setShowSuggestions(false);
+  };
+
+  const handleSupplierInput = (value, formSetter, suppliers) => {
+    const matched = findSupplierByName(suppliers, value);
+    formSetter((prev) => ({
+      ...prev,
+      fornecedor: value,
+      ...(matched && matched.preco_rs_kg !== null
+        ? {
+            price_per_kg: String(matched.preco_rs_kg),
+            price_currency: matched.moeda || prev.price_currency || "BRL",
+          }
+        : {}),
+    }));
   };
 
   const createNewVersion = async () => {
@@ -1642,9 +2003,10 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
       });
       toast.success("Ingrediente adicionado!");
       setNewItem({ ingredient_name: "", percentage: "", price_per_kg: "", price_usd: "", price_currency: "BRL", fornecedor: "", phase: "", function: "", catalog_id: "" });
+      setPendingCatalogItem(null);
       setShowSuggestions(false);
       onRefresh();
-    } catch (err) { toast.error("Erro ao adicionar"); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao adicionar"); }
   };
 
   const deleteItem = async (itemId) => {
@@ -1972,7 +2334,22 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
                                 <Input value={editItemForm.ingredient_name} onChange={e => setEditItemForm(p => ({ ...p, ingredient_name: e.target.value }))} className="h-7 text-xs" />
                               </td>
                               <td className="p-1.5">
-                                <Input value={editItemForm.fornecedor} onChange={e => setEditItemForm(p => ({ ...p, fornecedor: e.target.value }))} className="h-7 text-xs w-24" placeholder="Fornecedor" />
+                                <Input
+                                  value={editItemForm.fornecedor}
+                                  onChange={e => handleSupplierInput(e.target.value, setEditItemForm, editItemSuppliers)}
+                                  className="h-7 text-xs w-24"
+                                  placeholder="Fornecedor"
+                                  list={editItemSuppliers.length > 0 ? `pd-edit-suppliers-${editingItemId}` : undefined}
+                                />
+                                {editItemSuppliers.length > 0 && (
+                                  <datalist id={`pd-edit-suppliers-${editingItemId}`}>
+                                    {editItemSuppliers.map((supplier) => (
+                                      <option key={`${supplier.id}-${supplier.razao_social}`} value={supplier.razao_social}>
+                                        {supplier.nome_fantasia ? `${supplier.razao_social} (${supplier.nome_fantasia})` : supplier.razao_social}
+                                      </option>
+                                    ))}
+                                  </datalist>
+                                )}
                               </td>
                               <td className="p-1.5">
                                 <Input type="number" step="0.001" value={editItemForm.percentage} onChange={e => setEditItemForm(p => ({ ...p, percentage: e.target.value }))} className="h-7 text-xs w-20 text-right font-mono" />
@@ -2078,22 +2455,26 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
                       <Input value={newItem.ingredient_name}
                         onChange={e => {
                           setNewItem(p => ({ ...p, ingredient_name: e.target.value, catalog_id: "", fornecedor: "" }));
+                          setPendingCatalogItem(null);
                           setShowSuggestions(true);
                         }}
                         onFocus={() => setShowSuggestions(true)}
                         onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                        placeholder={catalog.length > 0 ? "Digite ou escolha do banco de custos..." : "Nome do ingrediente"}
+                        placeholder={ingredientOptions.length > 0 ? "Digite ou escolha uma MP cadastrada..." : "Nome do ingrediente"}
                         className="h-8 text-sm" />
                       {showSuggestions && filteredCatalog.length > 0 && (
                         <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-50 max-h-64 overflow-y-auto">
                           {filteredCatalog.slice(0, 15).map(cat => {
                             const temFornecedores = (cat.fornecedores || []).length > 0;
-                            const precoMin = temFornecedores
-                              ? Math.min(...cat.fornecedores.map(s => s.preco_rs_kg || 0))
-                              : cat.preco_rs_kg || 0;
+                            const precos = (cat.fornecedores || [])
+                              .map((supplier) => toFiniteNumber(supplier.preco_rs_kg))
+                              .filter((price) => price !== null);
+                            const precoMin = precos.length > 0
+                              ? Math.min(...precos)
+                              : toFiniteNumber(cat.preco_rs_kg);
                             return (
                               <button
-                                key={cat.id}
+                                key={cat.option_key}
                                 type="button"
                                 onMouseDown={(e) => { e.preventDefault(); pickFromCatalog(cat); }}
                                 className="w-full text-left px-3 py-2 hover:bg-muted border-b last:border-0 flex items-center justify-between gap-2"
@@ -2108,7 +2489,9 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
                                   </div>
                                 </div>
                                 <span className="text-xs font-mono font-semibold shrink-0 text-green-700">
-                                  {temFornecedores ? "a partir de " : ""}R$ {precoMin.toFixed(2)}/{cat.unidade || "kg"}
+                                  {precoMin !== null
+                                    ? <>{temFornecedores ? "a partir de " : ""}R$ {precoMin.toFixed(2)}/{cat.unidade || "kg"}</>
+                                    : "sem preço"}
                                 </span>
                               </button>
                             );
@@ -2146,9 +2529,22 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
                     </div>
                     <div className="w-28">
                       <Label className="text-[11px] text-muted-foreground">Fornecedor</Label>
-                      <Input value={newItem.fornecedor}
-                        onChange={e => setNewItem(p => ({ ...p, fornecedor: e.target.value }))}
-                        placeholder="Fornecedor" className="h-8 text-sm" />
+                      <Input
+                        value={newItem.fornecedor}
+                        onChange={e => handleSupplierInput(e.target.value, setNewItem, newItemSuppliers)}
+                        placeholder="Fornecedor"
+                        className="h-8 text-sm"
+                        list={newItemSuppliers.length > 0 ? `pd-formula-suppliers-${devId}` : undefined}
+                      />
+                      {newItemSuppliers.length > 0 && (
+                        <datalist id={`pd-formula-suppliers-${devId}`}>
+                          {newItemSuppliers.map((supplier) => (
+                            <option key={`${supplier.id}-${supplier.razao_social}`} value={supplier.razao_social}>
+                              {supplier.nome_fantasia ? `${supplier.razao_social} (${supplier.nome_fantasia})` : supplier.razao_social}
+                            </option>
+                          ))}
+                        </datalist>
+                      )}
                     </div>
                     <div className="w-20">
                       <Label className="text-[11px] text-muted-foreground"><FieldHint hint="Percentual em massa deste ingrediente na fórmula total. A soma de todos os ingredientes deve ser 100%.">%Fórmula</FieldHint></Label>
@@ -2246,6 +2642,7 @@ function FormulaTab({ devId, formulas, onRefresh, canEdit, clientInfo, req }) {
 /* ============ SAMPLE BATCH COMPONENTS ============ */
 
 function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
+  const { ingredientOptions, getSuppliersForIngredient } = usePdMaterialLibrary();
   const emptyVariante = () => ({ id: crypto.randomUUID(), nome: "", versao: 1, overrides: [], notas: "" });
   const [form, setForm] = useState(initial ? {
     nome: initial.nome || "",
@@ -2269,24 +2666,9 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
   const [saving, setSaving] = useState(false);
   const [baseItems, setBaseItems] = useState([]);
   const [loadingItems, setLoadingItems] = useState(false);
-  const [catalog, setCatalog] = useState([]);
-  const [fornecedores, setFornecedores] = useState([]);
-
-  useEffect(() => {
-    api.get("/pd/catalog")
-      .then(({ data }) => setCatalog(Array.isArray(data) ? data : []))
-      .catch(() => {});
-    api.get("/compras/fornecedores", { params: { limit: 500 } })
-      .then(({ data }) => setFornecedores(Array.isArray(data?.fornecedores) ? data.fornecedores : []))
-      .catch(() => {});
-  }, []);
 
   const getFornecedoresForIngredient = (ingredientName) => {
-    const catalogItem = catalog.find(c => c.nome === ingredientName);
-    if (catalogItem?.fornecedores?.length > 0) {
-      return catalogItem.fornecedores.map(f => ({ id: f.nome, razao_social: f.nome, nome_fantasia: "" }));
-    }
-    return fornecedores;
+    return getSuppliersForIngredient(ingredientName);
   };
 
   useEffect(() => {
@@ -2328,12 +2710,60 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
   const handleSave = async () => {
     if (!form.nome.trim()) { toast.error("Nome do lote é obrigatório"); return; }
     if (!form.formula_base_id) { toast.error("Selecione a fórmula base"); return; }
+    if ((form.variantes || []).length === 0) { toast.error("Adicione ao menos uma variante"); return; }
+
+    const sanitizedVariantes = [];
+    for (let index = 0; index < (form.variantes || []).length; index += 1) {
+      const variante = form.variantes[index];
+      const nomeVariante = variante.nome?.trim() || `Variante ${index + 1}`;
+      const sanitizedOverrides = [];
+
+      for (const override of variante.overrides || []) {
+        const ingredientBase = override.ingredient_name_base?.trim() || "";
+        const ingredientName = override.ingredient_name?.trim() || "";
+        const fornecedor = override.fornecedor?.trim() || "";
+        const percentage = parseFloat(override.percentage) || 0;
+        const isEmptyOverride = !ingredientBase && !ingredientName && !fornecedor && percentage === 0;
+
+        if (isEmptyOverride) continue;
+        if (!ingredientBase || !ingredientName) {
+          toast.error(`Preencha base e MP substituta em ${nomeVariante}`);
+          return;
+        }
+        if (percentage <= 0) {
+          toast.error(`Informe um percentual válido para ${ingredientName} em ${nomeVariante}`);
+          return;
+        }
+
+        sanitizedOverrides.push({
+          ingredient_name_base: ingredientBase,
+          ingredient_name: ingredientName,
+          percentage,
+          fornecedor,
+        });
+      }
+
+      sanitizedVariantes.push({
+        ...variante,
+        nome: nomeVariante,
+        notas: variante.notas || "",
+        overrides: sanitizedOverrides,
+      });
+    }
+
+    const payload = {
+      ...form,
+      nome: form.nome.trim(),
+      notas: form.notas || "",
+      variantes: sanitizedVariantes,
+    };
+
     setSaving(true);
     try {
-      await onSave(form);
+      await onSave(payload);
       onClose();
     } catch (err) {
-      toast.error("Erro ao salvar lote");
+      toast.error(formatApiError(err) || "Erro ao salvar lote");
     } finally { setSaving(false); }
   };
 
@@ -2425,7 +2855,7 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
                         </SelectContent>
                       </Select>
                       <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      {catalog.length > 0 ? (
+                      {ingredientOptions.length > 0 ? (
                         <Select value={o.ingredient_name} onValueChange={val => {
                           const v2 = [...form.variantes];
                           v2[vIdx] = { ...v2[vIdx], overrides: v2[vIdx].overrides.map((ov, i) => i === oIdx ? { ...ov, ingredient_name: val, fornecedor: "" } : ov) };
@@ -2433,7 +2863,11 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
                         }}>
                           <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="MP substituta..." /></SelectTrigger>
                           <SelectContent>
-                            {catalog.map(it => <SelectItem key={it.id} value={it.nome}>{it.nome}</SelectItem>)}
+                            {ingredientOptions.map(it => (
+                              <SelectItem key={it.option_key} value={it.nome}>
+                                {it.nome}{it.codigo_interno ? ` · ${it.codigo_interno}` : ""}{it.fornecedores?.length ? ` · ${it.fornecedores.length} forn.` : ""}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       ) : (
@@ -2447,7 +2881,11 @@ function SampleBatchEditor({ devId, formulas, initial, onSave, onClose }) {
                       <Select value={o.fornecedor} onValueChange={val => updateOverride(vIdx, oIdx, "fornecedor", val)}>
                         <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Fornecedor..." /></SelectTrigger>
                         <SelectContent>
-                          {filteredFornecedores.map(f => <SelectItem key={f.id} value={f.razao_social}>{f.razao_social}{f.nome_fantasia ? ` (${f.nome_fantasia})` : ""}</SelectItem>)}
+                          {filteredFornecedores.map(f => (
+                            <SelectItem key={`${f.id}-${f.razao_social}`} value={f.razao_social}>
+                              {f.razao_social}{f.nome_fantasia ? ` (${f.nome_fantasia})` : ""}{f.status ? ` · ${f.status}` : ""}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                       <span className="text-xs text-muted-foreground flex-shrink-0">%</span>
@@ -2772,7 +3210,7 @@ function SampleBatchSection({ devId, formulas, onRefresh, canEdit }) {
       await api.post(`/pd/developments/${devId}/sample-batches`, form);
       toast.success("Lote criado");
     }
-    fetchBatches();
+    await fetchBatches();
   };
 
   const handleDelete = async (batchId) => {
@@ -2781,7 +3219,7 @@ function SampleBatchSection({ devId, formulas, onRefresh, canEdit }) {
       await api.delete(`/pd/developments/${devId}/sample-batches/${batchId}`);
       toast.success("Lote removido");
       fetchBatches();
-    } catch { toast.error("Erro ao remover lote"); }
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao remover lote"); }
   };
 
   const openCreate = () => { setEditingBatch(null); setEditorOpen(true); };
@@ -2966,7 +3404,7 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
 
   const getOverallStatus = (cond) => {
     const studyCond = study?.conditions?.find(c => c.code === cond.code);
-    return studyCond?.status || "pending_d0";
+    return studyCond?.status || "pending";
   };
 
   const isAlertD2 = (cond) => {
@@ -2977,6 +3415,11 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
   };
 
   if (loading) return <div className="flex items-center justify-center py-16"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
+
+  const defaultCheckpointLabel = (constants.checkpoints || []).map(fmtDay).join(" / ");
+  const freezeThawCheckpointLabel = (
+    constants.conditions.find(cond => cond.code === "freeze_thaw")?.checkpoints || []
+  ).map(fmtDay).join(" / ");
 
   return (
     <div className="space-y-5" data-testid="stability-grid-panel">
@@ -3002,6 +3445,12 @@ function StabilityGridPanel({ reqId, canEdit, onReadingsLoaded, showStudyHeader 
             </Button>
           </div>
         </div>
+      )}
+
+      {freezeThawCheckpointLabel && (
+        <p className="text-[11px] text-muted-foreground">
+          Base: {defaultCheckpointLabel}. Freeze/Thaw segue checkpoints proprios: {freezeThawCheckpointLabel}.
+        </p>
       )}
 
       {/* Conditions Grid */}
@@ -3148,18 +3597,7 @@ const FT_PARAMS = [
   { key: "teor_alcool", label: "Teor de Álcool" },
 ];
 
-// B11: mapeia cada parâmetro da Ficha Técnica para o campo equivalente já preenchido
-// em Características Padrão (aba Testes / db.pd_lab_results), evitando redigitação.
-// Sem correspondente para densidade/teor_alcool — não existe medição equivalente lá.
-const FT_PARAM_SOURCE = {
-  aspecto: (lr) => lr?.sensorial?.aspecto,
-  cor: (lr) => lr?.sensorial?.cor,
-  odor: (lr) => lr?.sensorial?.odor,
-  ph: (lr) => lr?.ph?.valor_medido,
-};
-
 function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit, labResults }) {
-  const [analise, setAnalise] = useState({});
   const EMPTY_ELABORACAO = { secoes: [] };
   // Garante shape completo por seção — dados legados podem ter sido gravados sem `etapas`
   // (ou por um caller futuro que não espelhe addSecao), o que quebrava o render em .map().
@@ -3190,19 +3628,6 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit, labResults }) {
     return { especificacao: "", resultado: "", pa: "" };
   };
   const [autoFilled, setAutoFilled] = useState({});
-  // B11: se o "resultado" ainda não foi preenchido na ficha, sugere o valor já
-  // registrado em Características Padrão (nunca sobrescreve o que o usuário já digitou).
-  const normalizeParamWithSource = (key, val) => {
-    const normalized = normalizeParam(val);
-    if (!normalized.resultado) {
-      const sourceVal = FT_PARAM_SOURCE[key]?.(labResults);
-      if (sourceVal) {
-        setAutoFilled(prev => ({ ...prev, [key]: true }));
-        return { ...normalized, resultado: sourceVal };
-      }
-    }
-    return normalized;
-  };
 
   const [form, setForm] = useState({
     produto: "", lote: "", data_fabricacao: "", validade: "", quantidade: "",
@@ -3221,8 +3646,15 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit, labResults }) {
     setLoading(true);
     api.get(`/pd/requests/${reqId}/ficha-tecnica-ui`).then(({ data }) => {
       const a = data.analise || {};
-      setAnalise(a);
-      setForm(prev => ({
+      const fallbackLabResults = data.lab_results && Object.keys(data.lab_results).length > 0 ? data.lab_results : (labResults || {});
+      const fallbackAutoFilled = data.auto_filled || {
+        aspecto: !normalizeParam(a.aspecto).resultado && !!fallbackLabResults?.sensorial?.aspecto,
+        cor: !normalizeParam(a.cor).resultado && !!fallbackLabResults?.sensorial?.cor,
+        odor: !normalizeParam(a.odor).resultado && !!fallbackLabResults?.sensorial?.odor,
+        ph: !normalizeParam(a.ph).resultado && !!fallbackLabResults?.ph?.valor_medido,
+      };
+      setAutoFilled(fallbackAutoFilled);
+      setForm({
         produto: a.produto || req.project_name || "",
         lote: a.lote || "",
         data_fabricacao: a.data_fabricacao || "",
@@ -3231,15 +3663,15 @@ function FichaTecnicaTab({ reqId, formulas, req, dev, canEdit, labResults }) {
         elaboracao: parseElaboracao(a.elaboracao),
         resp_tecnico: a.resp_tecnico || "",
         status_aprovacao: a.status_aprovacao || "",
-        aspecto: normalizeParamWithSource("aspecto", a.aspecto),
-        cor: normalizeParamWithSource("cor", a.cor),
+        aspecto: normalizeParam(a.aspecto),
+        cor: normalizeParam(a.cor),
         densidade: normalizeParam(a.densidade),
-        odor: normalizeParamWithSource("odor", a.odor),
-        ph: normalizeParamWithSource("ph", a.ph),
+        odor: normalizeParam(a.odor),
+        ph: normalizeParam(a.ph),
         teor_alcool: normalizeParam(a.teor_alcool),
-      }));
+      });
     }).catch(() => {}).finally(() => setLoading(false));
-  }, [reqId, req.project_name]);
+  }, [reqId, req.project_name, labResults]);
 
   const setParam = (key, field, val) => {
     setForm(prev => ({ ...prev, [key]: { ...prev[key], [field]: val } }));
@@ -5097,6 +5529,14 @@ function EmptyState({ icon: Icon, title, subtitle }) {
 
 /* ============ PD-08: FORMULA PHASE EDITOR ============ */
 function FormulaPhaseEditor({ formulaId, canEdit }) {
+  const normalizePhase = useCallback((phase, index = 0) => ({
+    id: phase?.id || `phase-${index}`,
+    titulo: phase?.titulo || phase?.nome_fase || "",
+    descricao: phase?.descricao || phase?.instrucoes || "",
+    temperatura: phase?.temperatura || "",
+    observacoes: phase?.observacoes || phase?.notas || "",
+    ordem: phase?.ordem ?? index,
+  }), []);
   const [phases, setPhases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -5109,9 +5549,9 @@ function FormulaPhaseEditor({ formulaId, canEdit }) {
     setLoading(true);
     try {
       const { data } = await api.get(`/pd/formulas/${formulaId}/phases`);
-      setPhases(Array.isArray(data) ? data : []);
+      setPhases(Array.isArray(data) ? data.map((phase, index) => normalizePhase(phase, index)) : []);
     } catch { setPhases([]); } finally { setLoading(false); }
-  }, [formulaId]);
+  }, [formulaId, normalizePhase]);
 
   useEffect(() => { fetchPhases(); }, [fetchPhases]);
 
@@ -5119,26 +5559,34 @@ function FormulaPhaseEditor({ formulaId, canEdit }) {
     if (!addForm.titulo.trim()) return toast.error("Título da fase é obrigatório");
     setSaving(true);
     try {
-      await api.post(`/pd/formulas/${formulaId}/phases`, addForm);
+      await api.post(`/pd/formulas/${formulaId}/phases`, {
+        nome_fase: addForm.titulo.trim(),
+        instrucoes: addForm.descricao?.trim() || "",
+        temperatura: addForm.temperatura?.trim() || "",
+      });
       setAddForm({ titulo: "", descricao: "", temperatura: "" });
       setShowAdd(false);
-      fetchPhases();
+      await fetchPhases();
     } catch (err) { toast.error(formatApiError(err) || "Erro ao adicionar fase"); }
     finally { setSaving(false); }
   };
 
   const saveEdit = async (phaseId) => {
     try {
-      await api.put(`/pd/formula-phases/${phaseId}`, editForm);
+      await api.put(`/pd/formula-phases/${phaseId}`, {
+        nome_fase: editForm.titulo?.trim() || "",
+        instrucoes: editForm.descricao?.trim() || "",
+        temperatura: editForm.temperatura?.trim() || "",
+      });
       setEditingId(null);
-      fetchPhases();
-    } catch (err) { toast.error("Erro ao salvar"); }
+      await fetchPhases();
+    } catch (err) { toast.error(formatApiError(err) || "Erro ao salvar"); }
   };
 
   const deletePhase = async (phaseId) => {
     if (!window.confirm("Remover esta fase?")) return;
-    try { await api.delete(`/pd/formula-phases/${phaseId}`); fetchPhases(); }
-    catch (err) { toast.error("Erro ao remover"); }
+    try { await api.delete(`/pd/formula-phases/${phaseId}`); await fetchPhases(); }
+    catch (err) { toast.error(formatApiError(err) || "Erro ao remover"); }
   };
 
   const onDragEnd = async (result) => {
@@ -5149,6 +5597,7 @@ function FormulaPhaseEditor({ formulaId, canEdit }) {
     setPhases(reordered);
     try {
       await api.put(`/pd/formulas/${formulaId}/phases/reorder`, { phase_ids: reordered.map(p => p.id) });
+      await fetchPhases();
     } catch { fetchPhases(); }
   };
 
@@ -5250,7 +5699,6 @@ const PIPELINE_STAGES = [
   { id: "formulacao", label: "Formulação", icon: Beaker, color: "text-purple-500" },
   { id: "testes", label: "Testes em Lab", icon: TestTube, color: "text-cyan-500" },
   { id: "ficha_tecnica", label: "Ficha Técnica", icon: FileText, color: "text-sky-500" },
-  { id: "estabilidades", label: "Estabilidades", icon: Thermometer, color: "text-orange-500" },
   { id: "entregue_comercial", label: "Entregue ao Comercial", icon: Send, color: "text-amber-500" },
   { id: "enviada_cliente", label: "Enviada ao Cliente", icon: Package, color: "text-rose-500" },
   { id: "aprovacao_cliente", label: "Aprovação do Cliente", icon: ThumbsUp, color: "text-green-500" },
@@ -5266,10 +5714,9 @@ function computeTimelineStages(req, formulas = [], tests = [], samples = [], app
     { ...PIPELINE_STAGES[2], done: formulas.length > 0, current: s === "IN_PROGRESS" && formulas.length > 0 },
     { ...PIPELINE_STAGES[3], done: advanced, current: s === "IN_TESTS" },
     { ...PIPELINE_STAGES[4], done: veryAdvanced, current: false },
-    { ...PIPELINE_STAGES[5], done: veryAdvanced, current: false },
-    { ...PIPELINE_STAGES[6], done: veryAdvanced, current: s === "WAITING_APPROVAL" },
-    { ...PIPELINE_STAGES[7], done: veryAdvanced && samples.length > 0, current: false },
-    { ...PIPELINE_STAGES[8], done: ["APPROVED", "COMPLETED"].includes(s) || !!approval?.approved_by_client, current: ["APPROVED", "COMPLETED"].includes(s) },
+    { ...PIPELINE_STAGES[5], done: veryAdvanced, current: s === "WAITING_APPROVAL" },
+    { ...PIPELINE_STAGES[6], done: veryAdvanced && samples.length > 0, current: false },
+    { ...PIPELINE_STAGES[7], done: ["APPROVED", "COMPLETED"].includes(s) || !!approval?.approved_by_client, current: ["APPROVED", "COMPLETED"].includes(s) },
   ];
 }
 

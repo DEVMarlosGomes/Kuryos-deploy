@@ -115,7 +115,12 @@ def test_stability_templates_and_parameter_normalization_follow_spec_baseline():
     normalized = pd_routes._normalize_stability_parameters(
         {"appearance": "ok", "pH": 6.2, "invalid_field": "ignored"}
     )
+    checkpoints_by_code = {condition["code"]: condition["checkpoints"] for condition in conditions}
 
-    assert len(conditions) == 9
-    assert all(condition["checkpoints"][0] == 0 for condition in conditions)
+    assert len(conditions) == 5
+    assert checkpoints_by_code["ambient"] == [1, 2, 7, 30, 60, 90]
+    assert checkpoints_by_code["oven_45"] == [1, 2, 7, 30, 60, 90]
+    assert checkpoints_by_code["freezer_minus5"] == [1, 2, 7, 30, 60, 90]
+    assert checkpoints_by_code["light_exposure"] == [1, 2, 7, 30, 60, 90]
+    assert checkpoints_by_code["freeze_thaw"] == [1, 2, 7, 15]
     assert normalized == {"appearance": "ok", "ph": 6.2}

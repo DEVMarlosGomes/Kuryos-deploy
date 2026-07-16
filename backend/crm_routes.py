@@ -670,6 +670,11 @@ def _serialize(doc: dict) -> dict:
         doc.pop("_id", None)
     return doc
 
+
+def _normalize_currency_code(value: Optional[str], default: str = "BRL") -> str:
+    code = (value or default or "BRL").strip().upper()
+    return code if code in {"BRL", "USD"} else default
+
 async def _get_next_sample_code(projeto_id: str, tenant_id: str) -> str:
     """Retorna o próximo código de amostra GLOBAL no formato {ANO}-{NNNN} (ERP v3.0)."""
     return await next_sample_code(tenant_id)
@@ -1176,6 +1181,15 @@ def get_missing_qualification_fields(client: dict) -> list:
     return missing
 
 
+def _normalize_tem_anvisa_value(value: Optional[str]) -> str:
+    raw = clean_text(value or "").lower().replace(" ", "_")
+    if raw in ("depende_de_nos", "depende_de_nós", "depende"):
+        return "depende"
+    if raw in ("sim", "nao"):
+        return raw
+    return raw
+
+
 def _validate_client_transition_requirements(client: dict, target_stage: str):
     if target_stage != "qualificado":
         return
@@ -1302,7 +1316,7 @@ async def create_client(data: ClientCreate, request: Request):
         # Qualificado fields — pre-filled if provided at creation
         "decisores": [d.model_dump() for d in data.decisores] if data.decisores else [],
         "tem_marca_propria": None,
-        "tem_anvisa": data.tem_anvisa or "",
+        "tem_anvisa": _normalize_tem_anvisa_value(data.tem_anvisa),
         "volume_estimado_mensal": data.volume_estimado_mensal or "",
         "fornecedor_atual": data.fornecedor_atual.model_dump() if data.fornecedor_atual else {"tem": False, "motivo_troca": ""},
         "prazo_urgencia": None,
@@ -1431,6 +1445,9 @@ async def update_client(client_id: str, data: ClientUpdate, request: Request):
             raise HTTPException(status_code=400, detail=f"cli3 deve ter 3 letras (ex: 'ABC'). Recebido: '{raw}'")
         update_fields["cli3"] = letters or ""
 
+    if "tem_anvisa" in update_fields:
+        update_fields["tem_anvisa"] = _normalize_tem_anvisa_value(update_fields["tem_anvisa"])
+
     # R23: cli4 freeze — not editable after first SKU
     if "cli4" in update_fields:
         if existing.get("cli4_congelado"):
@@ -1488,6 +1505,7 @@ async def update_client(client_id: str, data: ClientUpdate, request: Request):
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
     client = await db.crm_clients.find_one({"id": client_id}, {"_id": 0})
+    client["missing_qualification_fields"] = get_missing_qualification_fields(client) if client.get("stage") == "prospeccao" else []
 
     # Auto-complete "qualificacao" blocking task when all 4 fields are present
     await _auto_complete_qualificacao_task(client, user["tenant_id"], user)
@@ -1731,6 +1749,17 @@ async def batch_create_projects(data: ProjectBatchCreate, request: Request):
 
     # ERP v3.0: hierarchy lock — child cannot exist without parent
     client = await assert_client_exists(user["tenant_id"], data.cliente_id)
+
+    if client.get("stage") == "cliente_perdido":
+        raise HTTPException(status_code=409, detail="Não é possível criar projeto para cliente perdido")
+    if client.get("stage") == "prospeccao":
+        _validate_client_transition_requirements(client, "qualificado")
+        await assert_no_blocking_tasks(
+            tenant_id=user["tenant_id"],
+            entity_type="client",
+            entity_id=data.cliente_id,
+            target_stage="qualificado",
+        )
 
     if not data.projects:
         raise HTTPException(status_code=400, detail="Nenhum projeto fornecido")
@@ -2308,6 +2337,7 @@ async def batch_create_samples_v2(data: SampleBatchCreateV2, request: Request):
                 "referencia_fragrancia": var.referencia_fragrancia,
                 "fr_codigo": var.fr_codigo or "",
                 "custo_fragrancia": var.custo_fragrancia,
+                "custo_fragrancia_currency": _normalize_currency_code(var.custo_fragrancia_currency),
                 "observacoes_especificas": var.observacoes_especificas,
                 "status": "solicitada",
                 "aprovacao_interna": False,
@@ -2345,7 +2375,9 @@ async def batch_create_samples_v2(data: SampleBatchCreateV2, request: Request):
                 "descricao_aplicacao": "",
                 "percentual_fragrancia": None,
                 "referencia_fragrancia": "",
+                "fr_codigo": "",
                 "custo_fragrancia": None,
+                "custo_fragrancia_currency": "USD",
                 "observacoes_especificas": "",
                 "status": "solicitada",
                 "aprovacao_interna": False,
@@ -2600,6 +2632,116 @@ async def _ensure_pd_request_for_card(card: dict, user: dict) -> str:
     return req_id
 
 
+_PD_REQUEST_STATUS_TO_CARD_STATUS = {
+    "OPEN": "solicitado",
+    "IN_PROGRESS": "em_desenvolvimento",
+    "IN_TESTS": "em_testes",
+    "WAITING_APPROVAL": "aguardando_aprovacao",
+    "REJECTED": "retrabalho_interno",
+    "APPROVED": "aprovado",
+    "COMPLETED": "concluido",
+}
+
+
+async def _sync_pd_request_pipeline_refs(
+    *,
+    pd_request_id: str,
+    card: dict,
+    user: dict,
+    request_status: str,
+    now: Optional[str] = None,
+    observacao: str = "",
+):
+    """Mantém card do pipeline e variação CRM coerentes com o status real da requisição P&D."""
+    kanban_status = _PD_REQUEST_STATUS_TO_CARD_STATUS.get(request_status)
+    if not kanban_status:
+        return
+
+    now = now or _now_iso()
+    old_status = card.get("status_pd", "")
+    movement_entry = {
+        "de": old_status,
+        "para": kanban_status,
+        "data": now,
+        "usuario": user.get("name", ""),
+        "usuario_id": user["id"],
+        "observacao": observacao or f"Sincronizado automaticamente pela requisição P&D: {request_status}",
+        "sincronizado_pd_request": True,
+    }
+
+    update_doc: Dict[str, Any] = {
+        "$set": {
+            "status_pd": kanban_status,
+            "pd_request_id": pd_request_id,
+            "updated_at": now,
+        }
+    }
+    if old_status != kanban_status:
+        update_doc["$push"] = {"historico_movimentacoes": movement_entry}
+
+    await db.pd_cards.update_one(
+        {"id": card["id"], "tenant_id": user["tenant_id"]},
+        update_doc,
+    )
+
+    card["status_pd"] = kanban_status
+    card["pd_request_id"] = pd_request_id
+    card["updated_at"] = now
+    if old_status != kanban_status:
+        historico = list(card.get("historico_movimentacoes") or [])
+        historico.append(movement_entry)
+        card["historico_movimentacoes"] = historico
+
+    crm_status, crm_label = PD_CARD_STATUS_TO_CRM_DISPLAY.get(
+        kanban_status,
+        (PD_TO_CRM_STATUS_MAP.get(kanban_status), PD_STATUS_LABELS.get(kanban_status, kanban_status)),
+    )
+    if card.get("amostra_id") and card.get("amostra_variacao_id"):
+        set_ops = {
+            "variacoes.$.status_pd_raw": kanban_status,
+            "variacoes.$.status_pd_label": crm_label,
+            "variacoes.$.ultima_atualizacao_pd": now,
+            "variacoes.$.updated_at": now,
+        }
+        if crm_status:
+            set_ops["variacoes.$.status"] = crm_status
+
+        await db.crm_samples.update_one(
+            {
+                "id": card["amostra_id"],
+                "tenant_id": user["tenant_id"],
+                "variacoes.id": card["amostra_variacao_id"],
+            },
+            {
+                "$set": set_ops,
+                "$push": {
+                    "variacoes.$.historico_status": {
+                        "de": "",
+                        "para": crm_status or "",
+                        "data": now,
+                        "usuario": user.get("name", ""),
+                        "usuario_id": user["id"],
+                        "sincronizado_pd": True,
+                        "status_pd": kanban_status,
+                        "label_pd": crm_label,
+                        "observacao": observacao or f"P&D movido automaticamente para {crm_label}",
+                    }
+                },
+            },
+        )
+
+    if _broadcast_event and old_status != kanban_status:
+        await _broadcast_event(
+            user["tenant_id"],
+            "pd_card_moved",
+            {
+                "card": card,
+                "from_status": old_status,
+                "to_status": kanban_status,
+            },
+        )
+
+
 async def _bootstrap_pd_development_for_variacao(pd_request_id: str, card: dict, user: dict):
     """Cria development + fórmula v1 pré-preenchida a partir da variação CRM.
     Inclui a fragrância da variação como primeiro item (P&D só adiciona MPs/insumos).
@@ -2637,6 +2779,14 @@ async def _bootstrap_pd_development_for_variacao(pd_request_id: str, card: dict,
         "comment": "Bootstrap automático: desenvolvimento + fórmula inicial criados a partir do briefing CRM",
         "created_at": now,
     })
+    await _sync_pd_request_pipeline_refs(
+        pd_request_id=pd_request_id,
+        card=card,
+        user=user,
+        request_status="IN_PROGRESS",
+        now=now,
+        observacao="Movido automaticamente para desenvolvimento ao gerar o bootstrap do P&D",
+    )
 
     # 1) Development
     dev_id = _new_id()
@@ -3280,6 +3430,8 @@ async def update_variacao(sample_id: str, variacao_id: str, data: VariacaoUpdate
     update_fields = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
     if not update_fields:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    if "custo_fragrancia_currency" in update_fields:
+        update_fields["custo_fragrancia_currency"] = _normalize_currency_code(update_fields["custo_fragrancia_currency"])
     
     # Montar update com dot notation para variação específica
     set_fields = {f"variacoes.$.{k}": v for k, v in update_fields.items()}
@@ -3813,7 +3965,9 @@ async def add_variacoes_to_sample(sample_id: str, data: AddVariacoesRequest, req
             "descricao_aplicacao": var.descricao_aplicacao,
             "percentual_fragrancia": var.percentual_fragrancia,
             "referencia_fragrancia": var.referencia_fragrancia,
+            "fr_codigo": var.fr_codigo or "",
             "custo_fragrancia": var.custo_fragrancia,
+            "custo_fragrancia_currency": _normalize_currency_code(var.custo_fragrancia_currency),
             "observacoes_especificas": var.observacoes_especificas,
             "status": "solicitada",
             "historico_status": [{
@@ -4204,6 +4358,8 @@ async def list_skus(
     request: Request,
     cliente_id: Optional[str] = None,
     status: Optional[str] = None,
+    cat3: Optional[str] = None,
+    cat2: Optional[str] = None,
     search: Optional[str] = None,
 ):
     user = await _get_current_user(request)
@@ -4212,6 +4368,10 @@ async def list_skus(
         query["cliente_id"] = cliente_id
     if status:
         query["status"] = status
+    if cat3:
+        query["cat3"] = clean_text(cat3).upper()
+    elif cat2:
+        query["cat2"] = clean_text(cat2).upper()
     if search:
         query["$or"] = [
             {"nome_produto": {"$regex": search, "$options": "i"}},

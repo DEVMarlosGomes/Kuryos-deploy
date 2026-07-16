@@ -25,7 +25,16 @@ import FilterBar, { applyFilters } from "@/components/FilterBar";
 import ListView from "@/components/ListView";
 import { formatApiError } from "@/lib/formatError";
 import { CurrencyInput, fmtCurrency } from "@/components/ui/CurrencyInput";
-import { fmtPriceDisplay, fmtVolumeDisplay, parsePriceInput, parseVolumeInput } from "@/lib/masks";
+import {
+    DEFAULT_PRICE_DISPLAY,
+    DEFAULT_VOLUME_DISPLAY,
+    fmtPriceDisplay,
+    fmtVolumeDisplay,
+    parsePriceInput,
+    parseVolumeInput,
+    seedPriceDisplay,
+    seedVolumeDisplay,
+} from "@/lib/masks";
 import { Cli4Field } from "@/components/Cli4Field";
 
 function CRMSubNav({ active }) {
@@ -34,6 +43,7 @@ function CRMSubNav({ active }) {
         { id: "clients", label: "Clientes", path: "/crm/clients" },
         { id: "projects", label: "Projetos", path: "/crm/projects" },
         { id: "samples", label: "Amostras", path: "/crm/samples" },
+        { id: "orders", label: "Pedidos", path: "/orders" },
     ];
     return (
         <div className="flex items-center gap-1 mb-5 border-b border-border pb-3">
@@ -92,6 +102,17 @@ const VOLUME_OPTIONS = [
     { value: "mais_20k", label: "> 20.000" },
 ];
 
+const ANVISA_OPTIONS = [
+    { value: "sim", label: "Sim" },
+    { value: "nao", label: "Não" },
+    { value: "depende", label: "Depende de Nós" },
+];
+
+function normalizeTemAnvisaValue(value) {
+    if (!value) return "";
+    return value === "depende_de_nos" ? "depende" : value;
+}
+
 const STAGE_ORDER = ["prospeccao", "qualificado", "projeto_em_discussao", "negociacao", "cliente_fechado", "cliente_perdido"];
 
 const CANAL_GROUP_LABELS = {
@@ -105,6 +126,11 @@ const CANAL_GROUP_LABELS = {
 };
 
 const EMPTY_ADDITIONAL_CONTACT = { nome: "", cargo: "", cargo_custom: "", whatsapp: "", email: "" };
+
+function hasMeaningfulContactData(contact) {
+    if (!contact) return false;
+    return Object.values(contact).some((value) => String(value || "").trim());
+}
 
 function createEmptyClient(defaultOwner = "") {
     return {
@@ -353,7 +379,7 @@ export default function CRM1Page() {
 
     const openProjectBatchModal = useCallback((client, shouldMoveClient = false) => {
         if (!client) return;
-        setPendingProjectMove(shouldMoveClient ? { clientId: client.id, stage: "projeto_em_discussao" } : null);
+        setPendingProjectMove(shouldMoveClient ? { clientId: client.id, stage: "projeto_em_discussao", fromStage: client.stage } : null);
         setBatchProjectError("");
         setBatchClientId(client.id);
         setBatchProjects([createProjectDraftForClient(client)]);
@@ -388,6 +414,11 @@ export default function CRM1Page() {
         }
 
         if (newStage === "projeto_em_discussao") {
+            if (client.stage === "prospeccao" && (client.missing_qualification_fields || []).length > 0) {
+                setSelectedClient(client);
+                toast.error("Preencha a qualificação no card antes de criar o projeto.");
+                return;
+            }
             openProjectBatchModal(client, true);
             return;
         }
@@ -441,8 +472,12 @@ export default function CRM1Page() {
         try {
             // Filtrar decisores com nome vazio antes de enviar
             const decisoresValidos = (newClient.decisores || []).filter(d => d.nome.trim());
+            const contatosAdicionaisValidos = (newClient.contatos_adicionais || []).filter(hasMeaningfulContactData);
             await api.post("/crm/clients", {
                 ...newClient,
+                contato_principal: hasMeaningfulContactData(newClient.contato_principal) ? newClient.contato_principal : undefined,
+                contatos_adicionais: contatosAdicionaisValidos,
+                tem_anvisa: normalizeTemAnvisaValue(newClient.tem_anvisa),
                 decisores: decisoresValidos,
             });
             toast.success("Cliente criado!");
@@ -461,7 +496,7 @@ export default function CRM1Page() {
             && project.responsavel_comercial
             && project.ideia_conceito.trim()
             && project.posicionamento
-            && String(project.volume_estimado_pedido || "").trim()
+            && parseVolumeInput(project.volume_estimado_pedido) > 0
             && project.tipo_servico
             && project.prazo_desejado_amostra
         ));
@@ -490,7 +525,16 @@ export default function CRM1Page() {
             setBatchProjects([createEmptyProject({ responsavel_comercial: user?.id || "" })]);
             if (pendingProjectMove?.clientId === batchClientId) {
                 try {
-                    await api.put(`/crm/clients/${batchClientId}/move`, { stage: pendingProjectMove.stage });
+                    const stagesToApply = [];
+                    if (pendingProjectMove.fromStage === "prospeccao") {
+                        stagesToApply.push("qualificado");
+                    }
+                    if (pendingProjectMove.fromStage !== pendingProjectMove.stage) {
+                        stagesToApply.push(pendingProjectMove.stage);
+                    }
+                    for (const stage of stagesToApply) {
+                        await api.put(`/crm/clients/${batchClientId}/move`, { stage });
+                    }
                 } catch (moveErr) {
                     toast.error(`Projetos criados, mas não foi possível avançar o cliente: ${formatApiError(moveErr) || "erro desconhecido"}`);
                 }
@@ -727,8 +771,8 @@ export default function CRM1Page() {
                                 </div>
                                 <div className="space-y-2">
                                     <Label className="flex items-center gap-1">
-                                        Código Cliente (CLI3)
-                                        <span className="text-[10px] text-muted-foreground font-normal">— SKU</span>
+                                        Código Cliente Legado (CLI3)
+                                        <span className="text-[10px] text-muted-foreground font-normal">— compatibilidade</span>
                                     </Label>
                                     <Input
                                         className="font-mono uppercase tracking-widest"
@@ -737,7 +781,7 @@ export default function CRM1Page() {
                                         placeholder="ABC"
                                         onChange={(e) => setNewClient({ ...newClient, cli3: e.target.value.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 3) })}
                                     />
-                                    <p className="text-[10px] text-muted-foreground">3 letras usadas no código do SKU (ex: CA-ABC-0001). Se vazio, usa as 3 primeiras letras da empresa.</p>
+                                    <p className="text-[10px] text-muted-foreground">Campo legado. O formato atual do SKU usa CAT3-CLI4-SEQ4; se vazio, o sistema mantém só para compatibilidade.</p>
                                 </div>
                                 <Cli4Field
                                     value={newClient.cli4}
@@ -977,12 +1021,12 @@ export default function CRM1Page() {
                                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div className="space-y-1.5">
                                         <Label className="text-xs">Tem ANVISA? *</Label>
-                                        <Select value={newClient.tem_anvisa} onValueChange={(v) => setNewClient({ ...newClient, tem_anvisa: v })}>
+                                        <Select value={normalizeTemAnvisaValue(newClient.tem_anvisa)} onValueChange={(v) => setNewClient({ ...newClient, tem_anvisa: normalizeTemAnvisaValue(v) })}>
                                             <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Selecionar" /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="sim">Sim</SelectItem>
-                                                <SelectItem value="nao">Não</SelectItem>
-                                                <SelectItem value="depende_de_nos">Depende de Nós</SelectItem>
+                                                {ANVISA_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                ))}
                                             </SelectContent>
                                         </Select>
                                     </div>
@@ -1233,14 +1277,26 @@ export default function CRM1Page() {
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Faixa de preço de venda (R$)</Label>
-                                            <Input type="text" inputMode="decimal" placeholder="0,00" value={proj.faixa_preco_venda}
+                                            <Input type="text" inputMode="decimal" placeholder={DEFAULT_PRICE_DISPLAY} value={proj.faixa_preco_venda}
                                                 onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], faixa_preco_venda: e.target.value }; setBatchProjects(p); }}
+                                                onFocus={() => {
+                                                    if (proj.faixa_preco_venda) return;
+                                                    const p = [...batchProjects];
+                                                    p[idx] = { ...p[idx], faixa_preco_venda: seedPriceDisplay(proj.faixa_preco_venda) };
+                                                    setBatchProjects(p);
+                                                }}
                                                 onBlur={() => { const fmt = fmtPriceDisplay(proj.faixa_preco_venda); if (fmt !== "" && fmt !== String(proj.faixa_preco_venda)) { const p = [...batchProjects]; p[idx] = { ...p[idx], faixa_preco_venda: fmt }; setBatchProjects(p); } }} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Volume estimado por pedido *</Label>
-                                            <Input type="text" inputMode="numeric" placeholder="15.000" value={proj.volume_estimado_pedido}
+                                            <Input type="text" inputMode="numeric" placeholder={DEFAULT_VOLUME_DISPLAY} value={proj.volume_estimado_pedido}
                                                 onChange={(e) => { const p = [...batchProjects]; p[idx] = { ...p[idx], volume_estimado_pedido: e.target.value }; setBatchProjects(p); }}
+                                                onFocus={() => {
+                                                    if (proj.volume_estimado_pedido) return;
+                                                    const p = [...batchProjects];
+                                                    p[idx] = { ...p[idx], volume_estimado_pedido: seedVolumeDisplay(proj.volume_estimado_pedido) };
+                                                    setBatchProjects(p);
+                                                }}
                                                 onBlur={() => { const fmt = fmtVolumeDisplay(proj.volume_estimado_pedido); if (fmt !== "" && fmt !== String(proj.volume_estimado_pedido)) { const p = [...batchProjects]; p[idx] = { ...p[idx], volume_estimado_pedido: fmt }; setBatchProjects(p); } }} />
                                         </div>
                                         <div className="space-y-2">
@@ -1353,8 +1409,12 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                 if (v !== undefined) updates[k] = v;
             }
             if (Object.keys(updates).length > 0) {
-                await api.put(`/crm/clients/${data.id}`, updates);
-                setData(prev => ({ ...prev, ...updates }));
+                if ("tem_anvisa" in updates) {
+                    updates.tem_anvisa = normalizeTemAnvisaValue(updates.tem_anvisa);
+                }
+                const resp = await api.put(`/crm/clients/${data.id}`, updates);
+                setData(resp.data);
+                setFullData((prev) => (prev ? { ...prev, client: resp.data } : prev));
                 toast.success("Cliente atualizado!");
             }
             setEditing({});
@@ -1367,6 +1427,13 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
 
     const val = (field) => editing[field] !== undefined ? editing[field] : (data?.[field] ?? "");
     const setVal = (field, value) => setEditing({ ...editing, [field]: value });
+    const decisores = Array.isArray(val("decisores")) ? val("decisores") : (Array.isArray(data?.decisores) ? data.decisores : []);
+    const fornecedorAtual = (() => {
+        const current = val("fornecedor_atual");
+        if (current && typeof current === "object" && !Array.isArray(current)) return current;
+        return data?.fornecedor_atual || { tem: false, motivo_troca: "" };
+    })();
+    const temAnvisaValue = normalizeTemAnvisaValue(val("tem_anvisa"));
 
     if (!data) return null;
 
@@ -1419,8 +1486,8 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                                     <div><Label className="text-xs">CNPJ</Label><Input value={val("cnpj")} onChange={(e) => setVal("cnpj", e.target.value)} /></div>
                                     <div>
                                         <Label className="text-xs flex items-center gap-1">
-                                            Código Cliente (CLI3)
-                                            <span className="text-[10px] text-muted-foreground font-normal">— usado no código SKU</span>
+                                            Código Cliente Legado (CLI3)
+                                            <span className="text-[10px] text-muted-foreground font-normal">— compatibilidade</span>
                                         </Label>
                                         <div className="flex items-center gap-2 mt-1">
                                             <Input
@@ -1432,7 +1499,7 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                                             />
                                             {(val("cli3") || data?.cli3) && (
                                                 <span className="text-[11px] text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">
-                                                    ex: CA-{(val("cli3") || data?.cli3 || "???").toUpperCase()}-0001
+                                                    legado: XXX-{(val("cli3") || data?.cli3 || "???").toUpperCase()}-0001
                                                 </span>
                                             )}
                                         </div>
@@ -1487,41 +1554,131 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                                 </div>
                             </section>
 
-                            {/* Qualificado — visible from stage >= qualificado */}
-                            {stageIndex >= 1 && (
-                                <section>
-                                    <Separator className="mb-3" />
-                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Qualificação</h4>
-                                    <div className="space-y-3">
-                                        <div>
-                                            <Label className="text-xs">Tem Marca Própria?</Label>
-                                            <div className="flex items-center gap-2 mt-1">
-                                                <Switch checked={val("tem_marca_propria") || false} onCheckedChange={(v) => setVal("tem_marca_propria", v)} />
-                                                <span className="text-sm">{val("tem_marca_propria") ? "Sim" : "Não"}</span>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <Label className="text-xs">Tem ANVISA?</Label>
-                                            <Select value={val("tem_anvisa")} onValueChange={(v) => setVal("tem_anvisa", v)}>
-                                                <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="sim">Sim</SelectItem>
-                                                    <SelectItem value="nao">Não</SelectItem>
-                                                    <SelectItem value="depende_de_nos">Depende de Nós</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                        <div>
-                                            <Label className="text-xs">Volume Estimado Mensal</Label>
-                                            <Select value={val("volume_estimado_mensal")} onValueChange={(v) => setVal("volume_estimado_mensal", v)}>
-                                                <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
-                                                <SelectContent>{VOLUME_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
-                                            </Select>
-                                        </div>
-                                        <div><Label className="text-xs">Prazo / Urgência</Label><Input type="date" value={val("prazo_urgencia") || ""} onChange={(e) => setVal("prazo_urgencia", e.target.value)} /></div>
+                            <section>
+                                <Separator className="mb-3" />
+                                <div className="flex items-start justify-between gap-3 mb-3">
+                                    <div>
+                                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Qualificação</h4>
+                                        {data.stage === "prospeccao" && (
+                                            <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1">
+                                                Preencha estes campos no card para liberar o avanço até Projeto em Discussão.
+                                            </p>
+                                        )}
                                     </div>
-                                </section>
-                            )}
+                                </div>
+                                <div className="space-y-3">
+                                    <div>
+                                        <Label className="text-xs">Tem Marca Própria?</Label>
+                                        <div className="flex items-center gap-2 mt-1">
+                                            <Switch checked={val("tem_marca_propria") || false} onCheckedChange={(v) => setVal("tem_marca_propria", v)} />
+                                            <span className="text-sm">{val("tem_marca_propria") ? "Sim" : "Não"}</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <Label className="text-xs">Tem ANVISA?</Label>
+                                        <Select value={temAnvisaValue} onValueChange={(v) => setVal("tem_anvisa", normalizeTemAnvisaValue(v))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {ANVISA_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div>
+                                        <Label className="text-xs">Volume Estimado Mensal</Label>
+                                        <Select value={val("volume_estimado_mensal")} onValueChange={(v) => setVal("volume_estimado_mensal", v)}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>{VOLUME_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center justify-between">
+                                            <Label className="text-xs">Decisores</Label>
+                                            <button
+                                                type="button"
+                                                className="text-[10px] text-primary hover:underline"
+                                                onClick={() => setVal("decisores", [...decisores, { nome: "", cargo: "", contato: "" }])}
+                                            >
+                                                + Adicionar
+                                            </button>
+                                        </div>
+                                        <div className="space-y-2 mt-1">
+                                            {decisores.length === 0 && (
+                                                <p className="text-[10px] text-amber-600">Adicione ao menos um decisor para concluir a qualificação.</p>
+                                            )}
+                                            {decisores.map((decisor, idx) => (
+                                                <div key={idx} className="grid grid-cols-1 gap-2 rounded-md border border-border p-2">
+                                                    <Input
+                                                        className="h-8 text-xs"
+                                                        placeholder="Nome do decisor"
+                                                        value={decisor.nome || ""}
+                                                        onChange={(e) => {
+                                                            const next = [...decisores];
+                                                            next[idx] = { ...next[idx], nome: e.target.value };
+                                                            setVal("decisores", next);
+                                                        }}
+                                                    />
+                                                    <Select
+                                                        value={decisor.cargo || ""}
+                                                        onValueChange={(v) => {
+                                                            const next = [...decisores];
+                                                            next[idx] = { ...next[idx], cargo: v };
+                                                            setVal("decisores", next);
+                                                        }}
+                                                    >
+                                                        <SelectTrigger className="h-8"><SelectValue placeholder="Cargo" /></SelectTrigger>
+                                                        <SelectContent>
+                                                            {detailCargoOptions.map((cargo) => (
+                                                                <SelectItem key={cargo} value={cargo}>{formatSlugLabel(cargo)}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                    <div className="flex gap-2">
+                                                        <Input
+                                                            className="h-8 text-xs"
+                                                            placeholder="Contato"
+                                                            value={decisor.contato || ""}
+                                                            onChange={(e) => {
+                                                                const next = [...decisores];
+                                                                next[idx] = { ...next[idx], contato: e.target.value };
+                                                                setVal("decisores", next);
+                                                            }}
+                                                        />
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="shrink-0"
+                                                            onClick={() => setVal("decisores", decisores.filter((_, decisorIndex) => decisorIndex !== idx))}
+                                                        >
+                                                            Remover
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2">
+                                            <Switch
+                                                checked={Boolean(fornecedorAtual.tem)}
+                                                onCheckedChange={(checked) => setVal("fornecedor_atual", { ...fornecedorAtual, tem: checked, motivo_troca: checked ? fornecedorAtual.motivo_troca : "" })}
+                                            />
+                                            <Label className="text-xs">Possui fornecedor atual?</Label>
+                                        </div>
+                                        {fornecedorAtual.tem && (
+                                            <Input
+                                                className="h-8 text-xs"
+                                                placeholder="Motivo da troca de fornecedor"
+                                                value={fornecedorAtual.motivo_troca || ""}
+                                                onChange={(e) => setVal("fornecedor_atual", { ...fornecedorAtual, motivo_troca: e.target.value })}
+                                            />
+                                        )}
+                                    </div>
+                                    <div><Label className="text-xs">Prazo / Urgência</Label><Input type="date" value={val("prazo_urgencia") || ""} onChange={(e) => setVal("prazo_urgencia", e.target.value)} /></div>
+                                </div>
+                            </section>
 
                             {/* Negociação — visible from stage >= negociacao */}
                             {stageIndex >= 3 && (

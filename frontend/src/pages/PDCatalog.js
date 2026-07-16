@@ -12,6 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Plus, Search, Pencil, Trash2, Database, History, Tag, TrendingUp, TrendingDown, X } from "lucide-react";
 import { toast } from "sonner";
 import PDSubNav from "@/components/PDSubNav";
+import { formatApiError } from "@/lib/formatError";
 
 const CATEGORIAS = [
   "Ativo",
@@ -121,7 +122,7 @@ export default function PDCatalog() {
       setShowForm(false);
       load();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Erro ao salvar");
+      toast.error(formatApiError(e) || "Erro ao salvar");
     } finally {
       setSaving(false);
     }
@@ -258,7 +259,7 @@ export default function PDCatalog() {
           <DialogHeader>
             <DialogTitle>{editingId ? "Editar Ingrediente" : "Novo Ingrediente"}</DialogTitle>
             <DialogDescription>
-              Cadastre o ingrediente com preço atualizado. Ele aparecerá no autocomplete da Manipulação.
+              Cadastre o ingrediente com preço atualizado. Fornecedores homologados vinculados à MP são puxados automaticamente ao salvar.
             </DialogDescription>
           </DialogHeader>
 

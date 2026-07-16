@@ -8,7 +8,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Trash2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { FieldHint } from "@/components/ui/FieldHint";
-import { fmtPriceDisplay, fmtVolumeDisplay } from "@/lib/masks";
+import {
+    DEFAULT_PRICE_DISPLAY,
+    DEFAULT_VOLUME_DISPLAY,
+    fmtPriceDisplay,
+    fmtVolumeDisplay,
+    seedPriceDisplay,
+    seedVolumeDisplay,
+} from "@/lib/masks";
 import { CurrencyInput } from "@/components/ui/CurrencyInput";
 
 function formatSlugLabel(value) {
@@ -194,8 +201,9 @@ export default function SampleBatchModal({
                                                     inputMode="decimal"
                                                     value={projetoData.faixa_preco_venda ?? ""}
                                                     onChange={(e) => updateProjeto("faixa_preco_venda", e.target.value)}
+                                                    onFocus={() => updateProjeto("faixa_preco_venda", seedPriceDisplay(projetoData.faixa_preco_venda))}
                                                     onBlur={(e) => updateProjeto("faixa_preco_venda", fmtPriceDisplay(e.target.value))}
-                                                    placeholder="0,00"
+                                                    placeholder={DEFAULT_PRICE_DISPLAY}
                                                 />
                                             </div>
                                             <div className="space-y-2">
@@ -205,8 +213,9 @@ export default function SampleBatchModal({
                                                     inputMode="numeric"
                                                     value={projetoData.volume_estimado_pedido ?? ""}
                                                     onChange={(e) => updateProjeto("volume_estimado_pedido", e.target.value)}
+                                                    onFocus={() => updateProjeto("volume_estimado_pedido", seedVolumeDisplay(projetoData.volume_estimado_pedido))}
                                                     onBlur={(e) => updateProjeto("volume_estimado_pedido", fmtVolumeDisplay(e.target.value))}
-                                                    placeholder="15.000"
+                                                    placeholder={DEFAULT_VOLUME_DISPLAY}
                                                 />
                                             </div>
                                             <div className="space-y-2 md:col-span-2">
@@ -414,7 +423,7 @@ export default function SampleBatchModal({
                                                     />
                                                     <CurrencyInput
                                                         value={variacao.custo_fragrancia || ""}
-                                                        currency={variacao.custo_fragrancia_currency || "BRL"}
+                                                        currency={variacao.custo_fragrancia_currency || "USD"}
                                                         onValueChange={(value) => updateVariacao(sampleIndex, variacaoIndex, "custo_fragrancia", value)}
                                                         onCurrencyChange={(currency) => updateVariacao(sampleIndex, variacaoIndex, "custo_fragrancia_currency", currency)}
                                                         showHint={false}
@@ -462,7 +471,7 @@ export default function SampleBatchModal({
                         sensorial: "",
                         ph: "",
                         observacao_tecnica: "",
-                        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "BRL", observacoes_especificas: "" }],
+                        variacoes: [{ descricao_aplicacao: "", percentual_fragrancia: "", referencia_fragrancia: "", custo_fragrancia: "", custo_fragrancia_currency: "USD", observacoes_especificas: "" }],
                     }])}>
                         <Plus className="h-4 w-4 mr-2" /> Adicionar Outra Amostra
                     </Button>
