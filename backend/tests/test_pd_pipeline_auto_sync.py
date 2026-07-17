@@ -200,3 +200,157 @@ def test_save_lab_results_auto_moves_request_to_tests(monkeypatch):
     sample_update = fake_db.crm_samples.update_calls[-1][1]["$set"]
     assert sample_update["variacoes.$.status_pd_raw"] == "em_testes"
     assert sample_update["variacoes.$.status_pd_label"] == "Em Testes"
+
+
+def test_sync_request_status_to_pipeline_advances_linked_project(monkeypatch):
+    fake_db = SimpleNamespace(
+        pd_cards=TrackingCollection(
+            [
+                {
+                    "id": "card-1",
+                    "tenant_id": "tenant-1",
+                    "pd_request_id": "req-1",
+                    "status_pd": "em_testes",
+                    "amostra_id": "sample-1",
+                    "amostra_variacao_id": "var-1",
+                    "projeto_id": "proj-1",
+                }
+            ]
+        ),
+        crm_samples=TrackingCollection(
+            [
+                {
+                    "id": "sample-1",
+                    "tenant_id": "tenant-1",
+                    "projeto_id": "proj-1",
+                    "variacoes": [{"id": "var-1"}],
+                }
+            ]
+        ),
+    )
+    pd_routes.db = fake_db
+    pd_routes._broadcast_event = None
+    pd_routes.now_iso_func = lambda: "2026-07-17T20:00:00+00:00"
+
+    advanced = []
+
+    async def fake_advance(project_id, target_stage, user, *, movement_source, extra_set=None):
+        advanced.append(
+            {
+                "project_id": project_id,
+                "target_stage": target_stage,
+                "movement_source": movement_source,
+                "extra_set": extra_set,
+                "user_id": user["id"],
+            }
+        )
+        return {"id": project_id, "stage": target_stage}
+
+    monkeypatch.setattr(crm_routes, "_advance_project_stage_if_needed", fake_advance)
+
+    updated = asyncio.run(
+        pd_routes._sync_request_status_to_pipeline(
+            req_id="req-1",
+            tenant_id="tenant-1",
+            new_status="WAITING_APPROVAL",
+            user={"id": "user-1", "name": "Tester", "tenant_id": "tenant-1"},
+        )
+    )
+
+    assert updated["status_pd"] == "aguardando_aprovacao"
+    assert fake_db.pd_cards.docs[0]["status_pd"] == "aguardando_aprovacao"
+    assert advanced == [
+        {
+            "project_id": "proj-1",
+            "target_stage": "amostra_enviada",
+            "movement_source": "pd_request_waiting_approval",
+            "extra_set": {"data_ultima_amostra_enviada": "2026-07-17T20:00:00+00:00"},
+            "user_id": "user-1",
+        }
+    ]
+
+
+def test_move_pd_card_advances_linked_project_to_development(monkeypatch):
+    fake_db = SimpleNamespace(
+        pd_cards=TrackingCollection(
+            [
+                {
+                    "id": "card-1",
+                    "tenant_id": "tenant-1",
+                    "status_pd": "solicitado",
+                    "amostra_id": "sample-1",
+                    "amostra_variacao_id": "var-1",
+                    "projeto_id": "proj-1",
+                }
+            ]
+        ),
+        crm_samples=TrackingCollection(
+            [
+                {
+                    "id": "sample-1",
+                    "tenant_id": "tenant-1",
+                    "projeto_id": "proj-1",
+                    "variacoes": [{"id": "var-1"}],
+                }
+            ]
+        ),
+    )
+    crm_routes.db = fake_db
+
+    async def fake_get_current_user(_request):
+        return {"id": "user-1", "name": "Tester", "tenant_id": "tenant-1", "role": "lider_pd"}
+
+    async def fake_assert_no_blocking_tasks(**_kwargs):
+        return None
+
+    async def fake_trigger_tasks_for_transition(**_kwargs):
+        return []
+
+    async def fake_audit_log(**_kwargs):
+        return None
+
+    async def fake_broadcast_pd_card_update(*_args, **_kwargs):
+        return None
+
+    advanced = []
+
+    async def fake_advance(project_id, target_stage, user, *, movement_source, extra_set=None):
+        advanced.append(
+            {
+                "project_id": project_id,
+                "target_stage": target_stage,
+                "movement_source": movement_source,
+                "extra_set": extra_set,
+                "user_id": user["id"],
+            }
+        )
+        return {"id": project_id, "stage": target_stage}
+
+    monkeypatch.setattr(crm_routes, "_get_current_user", fake_get_current_user)
+    monkeypatch.setattr(crm_routes, "require_roles", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(crm_routes, "assert_no_blocking_tasks", fake_assert_no_blocking_tasks)
+    monkeypatch.setattr(crm_routes, "trigger_tasks_for_transition", fake_trigger_tasks_for_transition)
+    monkeypatch.setattr(crm_routes, "audit_log", fake_audit_log)
+    monkeypatch.setattr(crm_routes, "_broadcast_pd_card_update", fake_broadcast_pd_card_update)
+    monkeypatch.setattr(crm_routes, "_advance_project_stage_if_needed", fake_advance)
+    monkeypatch.setattr(crm_routes, "_now_iso", lambda: "2026-07-17T20:05:00+00:00")
+
+    result = asyncio.run(
+        crm_routes.move_pd_card(
+            "card-1",
+            crm_routes.PDCardMove(status="em_desenvolvimento", observacao="Iniciado"),
+            SimpleNamespace(),
+        )
+    )
+
+    assert result["card"]["status_pd"] == "em_desenvolvimento"
+    assert fake_db.pd_cards.docs[0]["status_pd"] == "em_desenvolvimento"
+    assert advanced == [
+        {
+            "project_id": "proj-1",
+            "target_stage": "amostra_em_desenvolvimento",
+            "movement_source": "pd_card_in_development",
+            "extra_set": {"data_inicio_desenvolvimento": "2026-07-17T20:05:00+00:00"},
+            "user_id": "user-1",
+        }
+    ]

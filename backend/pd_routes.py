@@ -237,6 +237,39 @@ async def _sync_request_status_to_pipeline(
                 }
             )
 
+    project_id = updated_card.get("projeto_id")
+    if user and not project_id and updated_card.get("amostra_id"):
+        linked_sample = await db.crm_samples.find_one(
+            {"id": updated_card["amostra_id"], "tenant_id": tenant_id},
+            {"_id": 0, "projeto_id": 1},
+        )
+        project_id = (linked_sample or {}).get("projeto_id")
+
+    if user and project_id:
+        project_sync = {
+            "em_desenvolvimento": (
+                "amostra_em_desenvolvimento",
+                "pd_request_in_development",
+                {"data_inicio_desenvolvimento": now},
+            ),
+            "aguardando_aprovacao": (
+                "amostra_enviada",
+                "pd_request_waiting_approval",
+                {"data_ultima_amostra_enviada": now},
+            ),
+        }.get(kanban_status)
+        if project_sync:
+            from crm_routes import _advance_project_stage_if_needed
+
+            target_stage, movement_source, extra_set = project_sync
+            await _advance_project_stage_if_needed(
+                project_id,
+                target_stage,
+                user,
+                movement_source=movement_source,
+                extra_set=extra_set,
+            )
+
     return updated_card
 
 # ============ PYDANTIC MODELS ============

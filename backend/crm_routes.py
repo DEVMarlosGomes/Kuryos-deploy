@@ -985,6 +985,22 @@ async def _advance_project_stage_if_needed(
     return updated
 
 
+def _pd_status_to_project_stage_sync(pd_status: str, now: str) -> Optional[tuple[str, str, dict]]:
+    if pd_status == "em_desenvolvimento":
+        return (
+            "amostra_em_desenvolvimento",
+            "pd_card_in_development",
+            {"data_inicio_desenvolvimento": now},
+        )
+    if pd_status == "aguardando_aprovacao":
+        return (
+            "amostra_enviada",
+            "pd_card_waiting_approval",
+            {"data_ultima_amostra_enviada": now},
+        )
+    return None
+
+
 async def _mirror_client_stage_to_negociacao(project: dict, user: dict):
     """Quando CRM2 vai para em_negociacao, espelha o cliente no CRM1 para 'negociacao'."""
     cliente_id = project.get("cliente_id")
@@ -4978,7 +4994,26 @@ async def move_pd_card(card_id: str, data: PDCardMove, request: Request):
                 }
             )
             logger.info(f"Histórico P&D→CRM: Card {card_id} ({new_status} / {crm_label_obs}) registrado na variação {card['amostra_variacao_id']}")
-    
+
+    project_sync = _pd_status_to_project_stage_sync(new_status, now)
+    if project_sync:
+        project_id = card.get("projeto_id")
+        if not project_id and card.get("amostra_id"):
+            linked_sample = await db.crm_samples.find_one(
+                {"id": card["amostra_id"], "tenant_id": user["tenant_id"]},
+                {"_id": 0, "projeto_id": 1},
+            )
+            project_id = (linked_sample or {}).get("projeto_id")
+        if project_id:
+            target_stage, movement_source, extra_set = project_sync
+            await _advance_project_stage_if_needed(
+                project_id,
+                target_stage,
+                user,
+                movement_source=movement_source,
+                extra_set=extra_set,
+            )
+
     updated = await db.pd_cards.find_one({"id": card_id}, {"_id": 0})
     await _broadcast_pd_card_update(user["tenant_id"], updated, old_status, new_status)
 

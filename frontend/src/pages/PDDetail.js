@@ -463,6 +463,7 @@ export default function PDDetail() {
   const { user: authUser } = useAuth();
   const canEdit = authUser && ["admin", "gestor", "formulador", "lider_pd", "engenharia_produto"].includes(authUser.role);
   const canApproveCommercial = authUser && ["admin", "vendedor", "sales_ops", "sucesso_cliente"].includes(authUser.role);
+  const canManageApproval = Boolean(canEdit || canApproveCommercial);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
@@ -856,7 +857,7 @@ export default function PDDetail() {
 
           <TabsContent value="overview">
             <ErrorBoundary label="Overview" resetKey={req.id}>
-              <OverviewTab req={req} dev={dev} formulas={formulas} tests={tests} samples={samples} approval={approval} costs={costs} history={history} onRefresh={fetchData} hasDev={hasDev} clientInfo={client_info} canEdit={canEdit} formulaCostData={formula_cost_data} setActiveTab={setActiveTab} documents={documents} updates={updates} pending={pending} canViewCommercial={canViewCommercial} labResults={lab_results} />
+              <OverviewTab req={req} dev={dev} formulas={formulas} tests={tests} samples={samples} approval={approval} costs={costs} history={history} onRefresh={fetchData} hasDev={hasDev} clientInfo={client_info} canEdit={canEdit} canApproveCommercial={canApproveCommercial} canManageApproval={canManageApproval} onCommercialApprove={() => handleStatusChange("APPROVED")} onCommercialReject={() => handleStatusChange("REJECTED")} formulaCostData={formula_cost_data} setActiveTab={setActiveTab} documents={documents} updates={updates} pending={pending} canViewCommercial={canViewCommercial} labResults={lab_results} />
             </ErrorBoundary>
           </TabsContent>
 
@@ -965,7 +966,7 @@ function NeedsDev({ onAction, status, canEdit }) {
 }
 
 /* ============ OVERVIEW TAB ============ */
-function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, history, onRefresh, hasDev, clientInfo, canEdit, formulaCostData, setActiveTab, documents, updates, pending, canViewCommercial, labResults }) {
+function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, history, onRefresh, hasDev, clientInfo, canEdit, canApproveCommercial, canManageApproval, onCommercialApprove, onCommercialReject, formulaCostData, setActiveTab, documents, updates, pending, canViewCommercial, labResults }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({});
@@ -1008,6 +1009,9 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
     notes: approval?.notes || "",
   });
   const [savingApproval, setSavingApproval] = useState(false);
+  const canEditInternalApproval = Boolean(canEdit);
+  const canEditClientApproval = Boolean(canEdit || canApproveCommercial);
+  const canUseCommercialDecision = Boolean(canApproveCommercial && req.status === "WAITING_APPROVAL");
 
   useEffect(() => {
     setApprovalForm({
@@ -1021,12 +1025,19 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
     if (!dev) return;
     setSavingApproval(true);
     try {
-      await api.post(`/pd/developments/${dev.id}/approval`, approvalForm);
+      const payload = canEdit
+        ? approvalForm
+        : {
+            approved_by_client: approvalForm.approved_by_client,
+            approved_by_internal: approval?.approved_by_internal || false,
+            notes: approvalForm.notes || "",
+          };
+      await api.post(`/pd/developments/${dev.id}/approval`, payload);
       toast.success("Aprovação registrada!");
       setShowApproval(false);
       onRefresh();
     } catch (err) {
-      toast.error("Erro ao salvar aprovação");
+      toast.error(formatApiError(err) || "Erro ao salvar aprovação");
     } finally {
       setSavingApproval(false);
     }
@@ -1582,7 +1593,7 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
               <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
               <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Aprovação</p>
             </div>
-            <Button size="sm" variant={showApproval ? "secondary" : "outline"} onClick={() => setShowApproval(!showApproval)} className="gap-1.5 text-xs h-7" disabled={!canEdit}>
+            <Button size="sm" variant={showApproval ? "secondary" : "outline"} onClick={() => setShowApproval(!showApproval)} className="gap-1.5 text-xs h-7" disabled={!canManageApproval}>
               {showApproval ? <X className="h-3 w-3" /> : <Pencil className="h-3 w-3" />}
               {showApproval ? "Fechar" : (approval ? "Editar" : "Registrar")}
             </Button>
@@ -1602,6 +1613,9 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
                     ) : (
                       <Badge className="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 gap-1"><Clock className="h-3 w-3" />Interno Pendente</Badge>
                     )}
+                    {approval.approved_by_comercial && (
+                      <Badge className="bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300 gap-1"><Building2 className="h-3 w-3" />Comercial Aprovou</Badge>
+                    )}
                   </div>
                   {approval.notes && <p className="text-xs text-muted-foreground bg-muted/50 p-2 rounded mt-2">{approval.notes}</p>}
                 </div>
@@ -1612,22 +1626,52 @@ function OverviewTab({ req, dev, formulas, tests, samples, approval, costs, hist
               <div className="space-y-4">
                 <div className="flex items-center gap-6">
                   <div className="flex items-center gap-2">
-                    <Switch checked={approvalForm.approved_by_client} onCheckedChange={v => setApprovalForm(p => ({ ...p, approved_by_client: v }))} />
+                    <Switch checked={approvalForm.approved_by_client} disabled={!canEditClientApproval} onCheckedChange={v => setApprovalForm(p => ({ ...p, approved_by_client: v }))} />
                     <Label>Aprovação do Cliente</Label>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Switch checked={approvalForm.approved_by_internal} onCheckedChange={v => setApprovalForm(p => ({ ...p, approved_by_internal: v }))} />
+                    <Switch checked={approvalForm.approved_by_internal} disabled={!canEditInternalApproval} onCheckedChange={v => setApprovalForm(p => ({ ...p, approved_by_internal: v }))} />
                     <Label>Aprovação Interna</Label>
                   </div>
                 </div>
+                {!canEditInternalApproval && canEditClientApproval && (
+                  <p className="text-xs text-muted-foreground">
+                    O Comercial pode registrar a aprovação do cliente e despachar a aprovação final. A aprovação interna permanece sob responsabilidade do P&D.
+                  </p>
+                )}
                 <div>
                   <Label>Observações</Label>
                   <Textarea value={approvalForm.notes} onChange={e => setApprovalForm(p => ({ ...p, notes: e.target.value }))} rows={2} />
                 </div>
-                <Button size="sm" onClick={saveApproval} disabled={savingApproval} className="gap-1.5">
-                  <Save className="h-3.5 w-3.5" />
-                  {savingApproval ? "Salvando..." : "Salvar Aprovação"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={saveApproval} disabled={savingApproval || !canManageApproval} className="gap-1.5">
+                    <Save className="h-3.5 w-3.5" />
+                    {savingApproval ? "Salvando..." : "Salvar Aprovação"}
+                  </Button>
+                  {canUseCommercialDecision && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={onCommercialReject}
+                        disabled={savingApproval}
+                        className="gap-1.5"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Reprovar Comercialmente
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={onCommercialApprove}
+                        disabled={savingApproval}
+                        className="gap-1.5 bg-green-600 hover:bg-green-700 text-white"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Aprovar Comercialmente
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             )}
           </div>
