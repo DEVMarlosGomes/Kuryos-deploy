@@ -2,6 +2,42 @@
 const path = require("path");
 require("dotenv").config();
 
+const LUCIDE_REACT_PATTERN = /[\\/]node_modules[\\/]lucide-react[\\/]/;
+
+function excludeLucideFromSourceMapLoader(rules = []) {
+  for (const rule of rules) {
+    if (Array.isArray(rule.oneOf)) {
+      excludeLucideFromSourceMapLoader(rule.oneOf);
+    }
+
+    if (Array.isArray(rule.rules)) {
+      excludeLucideFromSourceMapLoader(rule.rules);
+    }
+
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    const hasSourceMapLoader =
+      typeof rule.loader === "string" && rule.loader.includes("source-map-loader")
+      || uses.some((entry) => {
+        if (typeof entry === "string") return entry.includes("source-map-loader");
+        return typeof entry?.loader === "string" && entry.loader.includes("source-map-loader");
+      });
+
+    if (!hasSourceMapLoader) continue;
+
+    if (!rule.exclude) {
+      rule.exclude = [LUCIDE_REACT_PATTERN];
+      continue;
+    }
+
+    if (Array.isArray(rule.exclude)) {
+      rule.exclude.push(LUCIDE_REACT_PATTERN);
+      continue;
+    }
+
+    rule.exclude = [rule.exclude, LUCIDE_REACT_PATTERN];
+  }
+}
+
 // Check if we're in development/preview mode (not production build)
 // Craco sets NODE_ENV=development for start, NODE_ENV=production for build
 const isDevServer = process.env.NODE_ENV !== "production";
@@ -37,6 +73,11 @@ let webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      excludeLucideFromSourceMapLoader(webpackConfig.module?.rules || []);
+      webpackConfig.ignoreWarnings = [
+        ...(webpackConfig.ignoreWarnings || []),
+        /Failed to parse source map/,
+      ];
 
       // Add ignored patterns to reduce watched directories
         webpackConfig.watchOptions = {

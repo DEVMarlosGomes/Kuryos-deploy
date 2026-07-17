@@ -85,6 +85,13 @@ const QUALIFICATION_FIELD_LABELS = {
     "contato_principal.whatsapp": "Contato — WhatsApp",
 };
 
+Object.assign(QUALIFICATION_FIELD_LABELS, {
+    decisores: "Decisores",
+    tem_anvisa: "ANVISA",
+    volume_estimado_mensal: "Volume estimado mensal",
+    fornecedor_atual: "Fornecedor atual",
+});
+
 const LOSS_REASON_OPTIONS = [
     { value: "preco", label: "Preço" },
     { value: "prazo", label: "Prazo" },
@@ -99,7 +106,9 @@ const VOLUME_OPTIONS = [
     { value: "menos_1k", label: "< 1.000 un" },
     { value: "1k_5k", label: "1.000 - 5.000" },
     { value: "5k_20k", label: "5.000 - 20.000" },
-    { value: "mais_20k", label: "> 20.000" },
+    { value: "20k_50k", label: "20.000 - 50.000" },
+    { value: "50k_100k", label: "50.000 - 100.000" },
+    { value: "mais_100k", label: "> 100.000" },
 ];
 
 const ANVISA_OPTIONS = [
@@ -130,6 +139,32 @@ const EMPTY_ADDITIONAL_CONTACT = { nome: "", cargo: "", cargo_custom: "", whatsa
 function hasMeaningfulContactData(contact) {
     if (!contact) return false;
     return Object.values(contact).some((value) => String(value || "").trim());
+}
+
+function hasNamedDecisionMaker(items = []) {
+    return (items || []).some((item) => String(item?.nome || "").trim());
+}
+
+function getMissingProjectGateFields(client) {
+    if (!client) return [];
+    const contact = client.contato_principal || {};
+    const missing = [];
+
+    if (!client.canal_origem) missing.push("canal_origem");
+    if (!Array.isArray(client.categoria_interesse) || client.categoria_interesse.length === 0) missing.push("categoria_interesse");
+    if (!client.temperatura_lead) missing.push("temperatura_lead");
+    if (!client.responsavel_comercial) missing.push("responsavel_comercial");
+    if (!client.segmento) missing.push("segmento");
+    if (!String(contact.nome || "").trim()) missing.push("contato_principal.nome");
+    if (!String(contact.whatsapp || "").trim()) missing.push("contato_principal.whatsapp");
+    if (!hasNamedDecisionMaker(client.decisores)) missing.push("decisores");
+    if (!String(normalizeTemAnvisaValue(client.tem_anvisa) || "").trim()) missing.push("tem_anvisa");
+    if (!String(client.volume_estimado_mensal || "").trim()) missing.push("volume_estimado_mensal");
+    if (!client.fornecedor_atual || typeof client.fornecedor_atual !== "object" || !Object.prototype.hasOwnProperty.call(client.fornecedor_atual, "tem")) {
+        missing.push("fornecedor_atual");
+    }
+
+    return [...new Set(missing)];
 }
 
 function createEmptyClient(defaultOwner = "") {
@@ -178,6 +213,31 @@ function createEmptyProject(defaults = {}) {
         prazo_desejado_amostra: "",
         observacoes_livres: "",
         ...defaults,
+    };
+}
+
+function buildQualificationDraft(client) {
+    return {
+        id: client?.id || "",
+        nome_empresa: client?.nome_empresa || "",
+        contato_principal: {
+            nome: client?.contato_principal?.nome || "",
+            cargo: client?.contato_principal?.cargo || "",
+            cargo_custom: client?.contato_principal?.cargo_custom || "",
+            whatsapp: client?.contato_principal?.whatsapp || "",
+            email: client?.contato_principal?.email || "",
+        },
+        canal_origem: client?.canal_origem || "",
+        categoria_interesse: Array.isArray(client?.categoria_interesse) ? client.categoria_interesse : [],
+        temperatura_lead: client?.temperatura_lead || "morno",
+        responsavel_comercial: client?.responsavel_comercial || "",
+        segmento: client?.segmento || "",
+        tem_anvisa: normalizeTemAnvisaValue(client?.tem_anvisa),
+        volume_estimado_mensal: client?.volume_estimado_mensal || "",
+        decisores: Array.isArray(client?.decisores) && client.decisores.length > 0 ? client.decisores : [{ nome: "", cargo: "", contato: "" }],
+        fornecedor_atual: client?.fornecedor_atual && typeof client.fornecedor_atual === "object"
+            ? { tem: Boolean(client.fornecedor_atual.tem), motivo_troca: client.fornecedor_atual.motivo_troca || "" }
+            : { tem: false, motivo_troca: "" },
     };
 }
 
@@ -236,6 +296,10 @@ export default function CRM1Page() {
     const [justificationText, setJustificationText] = useState("");
     const [batchProjects, setBatchProjects] = useState([createEmptyProject()]);
     const [batchProjectError, setBatchProjectError] = useState("");
+    const [qualificationModalOpen, setQualificationModalOpen] = useState(false);
+    const [qualificationDraft, setQualificationDraft] = useState(null);
+    const [qualificationProceedClient, setQualificationProceedClient] = useState(null);
+    const [savingQualification, setSavingQualification] = useState(false);
 
     const loadClients = useCallback(async () => {
         try {
@@ -301,6 +365,10 @@ export default function CRM1Page() {
             values.map((value) => ({ value, group, label: formatSlugLabel(value) }))
         ),
         [effectiveCategoryGroups]
+    );
+    const qualificationMissingFields = useMemo(
+        () => (qualificationDraft ? getMissingProjectGateFields(qualificationDraft) : []),
+        [qualificationDraft]
     );
     const createProjectDraftForClient = useCallback((client) => createEmptyProject({
         categoria: client?.categoria_interesse?.[0] || "",
@@ -377,14 +445,26 @@ export default function CRM1Page() {
     const userNameById = useMemo(() => Object.fromEntries((crmUsers || []).map((u) => [u.id, u.name])), [crmUsers]);
     const stageLabelById = useMemo(() => Object.fromEntries(STAGES.map((s) => [s.id, s.label])), []);
 
+    const openQualificationModal = useCallback((client, shouldMoveClient = false) => {
+        if (!client) return;
+        setQualificationDraft(buildQualificationDraft(client));
+        setQualificationProceedClient({ ...client, shouldMoveClient });
+        setQualificationModalOpen(true);
+    }, []);
+
     const openProjectBatchModal = useCallback((client, shouldMoveClient = false) => {
         if (!client) return;
+        const missingGateFields = getMissingProjectGateFields(client);
+        if (missingGateFields.length > 0) {
+            openQualificationModal(client, shouldMoveClient);
+            return;
+        }
         setPendingProjectMove(shouldMoveClient ? { clientId: client.id, stage: "projeto_em_discussao", fromStage: client.stage } : null);
         setBatchProjectError("");
         setBatchClientId(client.id);
         setBatchProjects([createProjectDraftForClient(client)]);
         setShowBatchProjects(true);
-    }, [createProjectDraftForClient]);
+    }, [createProjectDraftForClient, openQualificationModal]);
 
     const handleDragEnd = async (result) => {
         if (!result.destination) return;
@@ -415,8 +495,8 @@ export default function CRM1Page() {
 
         if (newStage === "projeto_em_discussao") {
             if (client.stage === "prospeccao" && (client.missing_qualification_fields || []).length > 0) {
-                setSelectedClient(client);
-                toast.error("Preencha a qualificação no card antes de criar o projeto.");
+                openQualificationModal(client, true);
+                setBatchProjectError("");
                 return;
             }
             openProjectBatchModal(client, true);
@@ -489,6 +569,45 @@ export default function CRM1Page() {
         }
     };
 
+    const handleQualificationSaveAndProceed = async () => {
+        if (!qualificationDraft?.id) return;
+        setSavingQualification(true);
+        try {
+            const payload = {
+                contato_principal: qualificationDraft.contato_principal,
+                canal_origem: qualificationDraft.canal_origem,
+                categoria_interesse: qualificationDraft.categoria_interesse,
+                temperatura_lead: qualificationDraft.temperatura_lead,
+                responsavel_comercial: qualificationDraft.responsavel_comercial,
+                segmento: qualificationDraft.segmento,
+                tem_anvisa: normalizeTemAnvisaValue(qualificationDraft.tem_anvisa),
+                volume_estimado_mensal: qualificationDraft.volume_estimado_mensal,
+                decisores: (qualificationDraft.decisores || []).filter((item) => String(item?.nome || "").trim()),
+                fornecedor_atual: qualificationDraft.fornecedor_atual,
+            };
+            const { data } = await api.put(`/crm/clients/${qualificationDraft.id}`, payload);
+            const missing = getMissingProjectGateFields(data);
+            setQualificationDraft(buildQualificationDraft(data));
+            await loadClients();
+            if (missing.length > 0) {
+                toast.error(`Ainda faltam campos para liberar o projeto: ${missing.map((field) => QUALIFICATION_FIELD_LABELS[field] || field).join(", ")}`);
+                return;
+            }
+            const proceedClient = qualificationProceedClient;
+            setQualificationModalOpen(false);
+            setQualificationProceedClient(null);
+            setQualificationDraft(null);
+            toast.success("Qualificação atualizada!");
+            if (proceedClient) {
+                openProjectBatchModal(data, Boolean(proceedClient.shouldMoveClient));
+            }
+        } catch (e) {
+            toast.error(formatApiError(e) || "Erro ao salvar qualificação");
+        } finally {
+            setSavingQualification(false);
+        }
+    };
+
     const handleBatchProjectSubmit = async () => {
         const valid = batchProjects.filter((project) => (
             project.nome_projeto.trim()
@@ -542,6 +661,13 @@ export default function CRM1Page() {
             loadClients();
         } catch (e) {
             const message = formatApiError(e);
+            if (batchClientId && /qualifica|ANVISA|decisores|volume|fornecedor/i.test(message || "")) {
+                const client = clients.find((item) => item.id === batchClientId) || qualificationProceedClient;
+                if (client) {
+                    setShowBatchProjects(false);
+                    openQualificationModal(client, Boolean(pendingProjectMove));
+                }
+            }
             setBatchProjectError(message);
             toast.error(message);
         }
@@ -554,6 +680,18 @@ export default function CRM1Page() {
         } else {
             setNewClient({ ...newClient, categoria_interesse: [...current, cat] });
         }
+    };
+
+    const toggleQualificationCategory = (cat) => {
+        setQualificationDraft((current) => {
+            const categories = current?.categoria_interesse || [];
+            return {
+                ...current,
+                categoria_interesse: categories.includes(cat)
+                    ? categories.filter((item) => item !== cat)
+                    : [...categories, cat],
+            };
+        });
     };
 
     const updateMainContact = (field, value) => {
@@ -769,7 +907,7 @@ export default function CRM1Page() {
                                         placeholder="00.000.000/0000-00"
                                     />
                                 </div>
-                                <div className="space-y-2">
+                                <div className="hidden space-y-2">
                                     <Label className="flex items-center gap-1">
                                         Código Cliente Legado (CLI3)
                                         <span className="text-[10px] text-muted-foreground font-normal">— compatibilidade</span>
@@ -1012,7 +1150,7 @@ export default function CRM1Page() {
                                     <div className="mt-0.5 h-4 w-4 shrink-0 text-amber-600">
                                         <svg viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" /></svg>
                                     </div>
-                                    <div>
+                                    <div className="hidden">
                                         <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">Qualificação (preencha para avançar diretamente para Projeto em Discussão)</p>
                                         <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">Sem estes campos, o sistema bloqueará o avanço até que sejam preenchidos.</p>
                                     </div>
@@ -1179,6 +1317,256 @@ export default function CRM1Page() {
                     <DialogFooter>
                         <Button variant="outline" onClick={() => { setShowJustification(false); setPendingMove(null); }}>Cancelar</Button>
                         <Button onClick={confirmBackwardMove} disabled={!justificationText.trim()}>Confirmar Movimentação</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={qualificationModalOpen} onOpenChange={(open) => {
+                setQualificationModalOpen(open);
+                if (!open) {
+                    setQualificationProceedClient(null);
+                    setQualificationDraft(null);
+                }
+            }}>
+                <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0 overflow-hidden">
+                    <DialogHeader className="p-6 pb-3 border-b">
+                        <DialogTitle className="font-heading flex items-center gap-2">
+                            <AlertTriangle className="h-5 w-5 text-amber-500" /> Qualificação obrigatória antes do projeto
+                        </DialogTitle>
+                        <p className="text-sm text-muted-foreground">
+                            Preencha os campos abaixo para liberar a criação do projeto para {qualificationDraft?.nome_empresa || "este cliente"}.
+                        </p>
+                    </DialogHeader>
+                    <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-5">
+                        {qualificationMissingFields.length > 0 && (
+                            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 p-3">
+                                <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">Campos pendentes</p>
+                                <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                    {qualificationMissingFields.map((field) => QUALIFICATION_FIELD_LABELS[field] || field).join(", ")}
+                                </p>
+                            </div>
+                        )}
+
+                        {qualificationDraft && (
+                            <>
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label>Contato - Nome</Label>
+                                        <Input
+                                            value={qualificationDraft.contato_principal?.nome || ""}
+                                            onChange={(e) => setQualificationDraft((current) => ({
+                                                ...current,
+                                                contato_principal: { ...current.contato_principal, nome: e.target.value },
+                                            }))}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Contato - WhatsApp</Label>
+                                        <Input
+                                            value={qualificationDraft.contato_principal?.whatsapp || ""}
+                                            onChange={(e) => setQualificationDraft((current) => ({
+                                                ...current,
+                                                contato_principal: { ...current.contato_principal, whatsapp: e.target.value },
+                                            }))}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Canal de Origem</Label>
+                                        <Select value={qualificationDraft.canal_origem || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, canal_origem: value }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {channelOptions.map((value) => (
+                                                    <SelectItem key={value} value={value}>{formatSlugLabel(value)}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Temperatura</Label>
+                                        <Select value={qualificationDraft.temperatura_lead || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, temperatura_lead: value }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {temperatureOptions.map((option) => (
+                                                    <SelectItem key={option} value={option}>{formatSlugLabel(option)}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Responsável Comercial</Label>
+                                        <Select value={qualificationDraft.responsavel_comercial || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, responsavel_comercial: value }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {crmUsers.map((crmUser) => (
+                                                    <SelectItem key={crmUser.id} value={crmUser.id}>{crmUser.name}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Segmento</Label>
+                                        <Select value={qualificationDraft.segmento || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, segmento: value }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {segmentOptions.map((option) => (
+                                                    <SelectItem key={option} value={option}>{formatSlugLabel(option)}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>Categorias de Interesse</Label>
+                                    <div className="flex flex-wrap gap-2">
+                                        {projectCategoryOptions.map((option) => {
+                                            const active = (qualificationDraft.categoria_interesse || []).includes(option.value);
+                                            return (
+                                                <button
+                                                    key={option.value}
+                                                    type="button"
+                                                    className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${active ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:bg-accent"}`}
+                                                    onClick={() => toggleQualificationCategory(option.value)}
+                                                >
+                                                    {option.label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label>Tem ANVISA?</Label>
+                                        <Select value={qualificationDraft.tem_anvisa || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, tem_anvisa: normalizeTemAnvisaValue(value) }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {ANVISA_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Volume Estimado Mensal</Label>
+                                        <Select value={qualificationDraft.volume_estimado_mensal || ""} onValueChange={(value) => setQualificationDraft((current) => ({ ...current, volume_estimado_mensal: value }))}>
+                                            <SelectTrigger><SelectValue placeholder="Selecionar" /></SelectTrigger>
+                                            <SelectContent>
+                                                {VOLUME_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <Label>Decisores</Label>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => setQualificationDraft((current) => ({
+                                                ...current,
+                                                decisores: [...(current.decisores || []), { nome: "", cargo: "", contato: "" }],
+                                            }))}
+                                        >
+                                            <Plus className="h-3.5 w-3.5 mr-1" /> Adicionar
+                                        </Button>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {(qualificationDraft.decisores || []).map((decisor, idx) => (
+                                            <div key={idx} className="grid grid-cols-1 gap-2 rounded-md border border-border p-3 md:grid-cols-[1.2fr_1fr_1fr_auto]">
+                                                <Input
+                                                    placeholder="Nome do decisor"
+                                                    value={decisor.nome || ""}
+                                                    onChange={(e) => setQualificationDraft((current) => {
+                                                        const next = [...(current.decisores || [])];
+                                                        next[idx] = { ...next[idx], nome: e.target.value };
+                                                        return { ...current, decisores: next };
+                                                    })}
+                                                />
+                                                <Select
+                                                    value={decisor.cargo || ""}
+                                                    onValueChange={(value) => setQualificationDraft((current) => {
+                                                        const next = [...(current.decisores || [])];
+                                                        next[idx] = { ...next[idx], cargo: value };
+                                                        return { ...current, decisores: next };
+                                                    })}
+                                                >
+                                                    <SelectTrigger><SelectValue placeholder="Cargo" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {cargoOptions.map((cargo) => (
+                                                            <SelectItem key={cargo} value={cargo}>{formatSlugLabel(cargo)}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                <Input
+                                                    placeholder="Contato"
+                                                    value={decisor.contato || ""}
+                                                    onChange={(e) => setQualificationDraft((current) => {
+                                                        const next = [...(current.decisores || [])];
+                                                        next[idx] = { ...next[idx], contato: e.target.value };
+                                                        return { ...current, decisores: next };
+                                                    })}
+                                                />
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => setQualificationDraft((current) => ({
+                                                        ...current,
+                                                        decisores: (current.decisores || []).filter((_, decisorIndex) => decisorIndex !== idx),
+                                                    }))}
+                                                >
+                                                    Remover
+                                                </Button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-2">
+                                        <Switch
+                                            checked={Boolean(qualificationDraft.fornecedor_atual?.tem)}
+                                            onCheckedChange={(checked) => setQualificationDraft((current) => ({
+                                                ...current,
+                                                fornecedor_atual: {
+                                                    ...current.fornecedor_atual,
+                                                    tem: checked,
+                                                    motivo_troca: checked ? current.fornecedor_atual?.motivo_troca || "" : "",
+                                                },
+                                            }))}
+                                        />
+                                        <Label>Possui fornecedor atual?</Label>
+                                    </div>
+                                    {qualificationDraft.fornecedor_atual?.tem && (
+                                        <Input
+                                            placeholder="Motivo da troca de fornecedor"
+                                            value={qualificationDraft.fornecedor_atual?.motivo_troca || ""}
+                                            onChange={(e) => setQualificationDraft((current) => ({
+                                                ...current,
+                                                fornecedor_atual: { ...current.fornecedor_atual, motivo_troca: e.target.value },
+                                            }))}
+                                        />
+                                    )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                    <DialogFooter className="p-6 pt-3 border-t">
+                        <Button variant="outline" onClick={() => {
+                            setQualificationModalOpen(false);
+                            setQualificationProceedClient(null);
+                            setQualificationDraft(null);
+                        }}>
+                            Cancelar
+                        </Button>
+                        <Button onClick={handleQualificationSaveAndProceed} disabled={!qualificationDraft || savingQualification}>
+                            {savingQualification ? "Salvando..." : "Salvar e prosseguir"}
+                        </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -1484,7 +1872,7 @@ function ClientDetailSheet({ client, constants, onClose, onCreateProject }) {
                                 <div className="space-y-3">
                                     <div><Label className="text-xs">Empresa</Label><Input value={val("nome_empresa")} onChange={(e) => setVal("nome_empresa", e.target.value)} /></div>
                                     <div><Label className="text-xs">CNPJ</Label><Input value={val("cnpj")} onChange={(e) => setVal("cnpj", e.target.value)} /></div>
-                                    <div>
+                                    <div className="hidden">
                                         <Label className="text-xs flex items-center gap-1">
                                             Código Cliente Legado (CLI3)
                                             <span className="text-[10px] text-muted-foreground font-normal">— compatibilidade</span>

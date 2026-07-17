@@ -1159,6 +1159,20 @@ CLIENT_QUALIFICATION_REQUIRED_FIELDS = [
     ("contato_principal.whatsapp", "Contato — WhatsApp"),
 ]
 
+CLIENT_PROJECT_GATE_REQUIRED_FIELDS = [
+    ("canal_origem", "Canal de origem"),
+    ("categoria_interesse", "Categoria de interesse"),
+    ("temperatura_lead", "Temperatura"),
+    ("responsavel_comercial", "ResponsÃ¡vel comercial"),
+    ("segmento", "Segmento"),
+    ("contato_principal.nome", "Contato â€” nome"),
+    ("contato_principal.whatsapp", "Contato â€” WhatsApp"),
+    ("decisores", "Decisores"),
+    ("tem_anvisa", "ANVISA"),
+    ("volume_estimado_mensal", "Volume estimado mensal"),
+    ("fornecedor_atual", "Fornecedor atual"),
+]
+
 
 def get_missing_qualification_fields(client: dict) -> list:
     """Campos exigidos para avançar um lead de 'prospecção' para 'qualificado' (A2)."""
@@ -1181,6 +1195,28 @@ def get_missing_qualification_fields(client: dict) -> list:
     return missing
 
 
+def get_missing_project_gate_fields(client: dict) -> list:
+    """Campos exigidos para permitir criaÃ§Ã£o de projeto / avanÃ§o atÃ© Projeto em DiscussÃ£o."""
+    missing = list(get_missing_qualification_fields(client))
+
+    decisores = client.get("decisores") or []
+    has_decisor = any(clean_text((item or {}).get("nome", "")) for item in decisores if isinstance(item, dict))
+    if not has_decisor:
+        missing.append("decisores")
+
+    if not clean_text(client.get("tem_anvisa", "")):
+        missing.append("tem_anvisa")
+
+    if not clean_text(client.get("volume_estimado_mensal", "")):
+        missing.append("volume_estimado_mensal")
+
+    fornecedor_atual = client.get("fornecedor_atual")
+    if not isinstance(fornecedor_atual, dict) or "tem" not in fornecedor_atual:
+        missing.append("fornecedor_atual")
+
+    return list(dict.fromkeys(missing))
+
+
 def _normalize_tem_anvisa_value(value: Optional[str]) -> str:
     raw = clean_text(value or "").lower().replace(" ", "_")
     if raw in ("depende_de_nos", "depende_de_nós", "depende"):
@@ -1200,6 +1236,17 @@ def _validate_client_transition_requirements(client: dict, target_stage: str):
         raise HTTPException(
             status_code=409,
             detail=f"Preencha os campos obrigatórios antes de avançar: {readable}",
+        )
+
+
+def _validate_project_gate_requirements(client: dict):
+    missing = get_missing_project_gate_fields(client)
+    if missing:
+        labels = dict(CLIENT_PROJECT_GATE_REQUIRED_FIELDS)
+        readable = ", ".join(labels.get(field, field) for field in missing)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Preencha a qualificaÃ§Ã£o do cliente antes de criar o projeto: {readable}",
         )
 
 
@@ -1516,11 +1563,9 @@ async def update_client(client_id: str, data: ClientUpdate, request: Request):
 async def _auto_complete_qualificacao_task(client: dict, tenant_id: str, user: dict):
     """Mark the 'Qualificar lead' blocking task as done when all required fields are filled.
     The three fields below have no default value — only non-empty means 'filled'."""
-    decisores_ok = bool(client.get("decisores"))          # at least one entry in list
-    anvisa_ok = bool(str(client.get("tem_anvisa") or "").strip())   # e.g. "sim" / "nao"
-    volume_ok = bool(str(client.get("volume_estimado_mensal") or "").strip())
-
-    if not (decisores_ok and anvisa_ok and volume_ok):
+    missing = get_missing_project_gate_fields(client)
+    missing = [field for field in missing if field not in set(get_missing_qualification_fields(client))]
+    if missing:
         return
 
     now = _now_iso()
@@ -1580,6 +1625,8 @@ async def move_client(client_id: str, data: ClientMove, request: Request):
 
     # ERP v3.0: bloquear avanço se houver tarefas obrigatórias pendentes
     _validate_client_transition_requirements(client, new_stage)
+    if new_stage == "projeto_em_discussao":
+        _validate_project_gate_requirements(client)
     await assert_no_blocking_tasks(
         tenant_id=user["tenant_id"],
         entity_type="client",
@@ -1752,6 +1799,8 @@ async def batch_create_projects(data: ProjectBatchCreate, request: Request):
 
     if client.get("stage") == "cliente_perdido":
         raise HTTPException(status_code=409, detail="Não é possível criar projeto para cliente perdido")
+    if client.get("stage") in {"prospeccao", "qualificado"}:
+        _validate_project_gate_requirements(client)
     if client.get("stage") == "prospeccao":
         _validate_client_transition_requirements(client, "qualificado")
         await assert_no_blocking_tasks(

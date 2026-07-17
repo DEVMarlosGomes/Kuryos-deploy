@@ -283,7 +283,60 @@ def test_batch_create_projects_blocks_prospect_without_qualification(monkeypatch
         asyncio.run(crm_routes.batch_create_projects(payload, SimpleNamespace()))
 
     assert exc_info.value.status_code == 409
-    assert "Preencha os campos obrigatórios" in str(exc_info.value.detail)
+    assert "Preencha a qualifica" in str(exc_info.value.detail)
+    assert "ANVISA" in str(exc_info.value.detail)
+    assert "Fornecedor atual" in str(exc_info.value.detail)
+    assert fake_db.crm_projects.docs == []
+
+
+def test_batch_create_projects_blocks_qualified_client_without_project_gate(monkeypatch):
+    fake_db = FakeDB()
+    crm_routes.db = fake_db
+
+    async def fake_get_current_user(_request):
+        return {
+            "id": "user-1",
+            "name": "Tester",
+            "tenant_id": "tenant-1",
+            "role": "admin",
+        }
+
+    async def fake_assert_client_exists(_tenant_id, _client_id):
+        return {
+            "id": "client-1",
+            "tenant_id": "tenant-1",
+            "nome_empresa": "Cliente Qualificado",
+            "responsavel_comercial": "user-1",
+            "stage": "qualificado",
+            "canal_origem": "site",
+            "categoria_interesse": ["hidratante_facial"],
+            "temperatura_lead": "morno",
+            "segmento": "outro",
+            "contato_principal": {"nome": "Contato", "whatsapp": "11999999999"},
+            "decisores": [],
+            "tem_anvisa": "",
+            "volume_estimado_mensal": "",
+            "fornecedor_atual": None,
+        }
+
+    monkeypatch.setattr(crm_routes, "_get_current_user", fake_get_current_user)
+    monkeypatch.setattr(crm_routes, "require_roles", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(crm_routes, "assert_client_exists", fake_assert_client_exists)
+
+    payload = crm_routes.ProjectBatchCreate(
+        cliente_id="client-1",
+        projects=[crm_routes.ProjectBatchItem(nome_projeto="Projeto Bloqueado")],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(crm_routes.batch_create_projects(payload, SimpleNamespace()))
+
+    assert exc_info.value.status_code == 409
+    assert "Preencha a qualifica" in str(exc_info.value.detail)
+    assert "Decisores" in str(exc_info.value.detail)
+    assert "ANVISA" in str(exc_info.value.detail)
+    assert "Volume estimado mensal" in str(exc_info.value.detail)
+    assert "Fornecedor atual" in str(exc_info.value.detail)
     assert fake_db.crm_projects.docs == []
 
 
@@ -344,7 +397,7 @@ def test_batch_create_samples_persists_fragrance_currency_and_internal_code(monk
                 nome_produto="Shampoo Teste",
                 variacoes=[
                     crm_routes.VariacaoItem(
-                        descricao_aplicacao="Versão premium",
+                        descricao_aplicacao="Versao premium",
                         referencia_fragrancia="FR-00001 - Citrus",
                         fr_codigo="fr-00001",
                         custo_fragrancia=12.5,
@@ -403,7 +456,7 @@ def test_add_variacoes_rolls_after_z_and_persists_usd_currency(monkeypatch):
     payload = crm_routes.AddVariacoesRequest(
         variacoes=[
             crm_routes.VariacaoItem(
-                descricao_aplicacao="Continuação pós-Z",
+                descricao_aplicacao="Continuacao pos-Z",
                 referencia_fragrancia="FR-00999 - Amber",
                 fr_codigo="fr-00999",
                 custo_fragrancia=8.75,

@@ -1,0 +1,28 @@
+                                    <Label>CNPJ <span className="text-xs text-muted-foreground font-normal">(opcional)</span></Label>
+                                    <Input
+                                        value={newClient.cnpj}
+                                        onChange={(e) => setNewClient({ ...newClient, cnpj: e.target.value })}
+                                        placeholder="00.000.000/0000-00"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label className="flex items-center gap-1">
+                                        Código Cliente Legado (CLI3)
+                                        <span className="text-[10px] text-muted-foreground font-normal">— compatibilidade</span>
+                                    </Label>
+                                    <Input
+                                        className="font-mono uppercase tracking-widest"
+                                        maxLength={3}
+                                        value={newClient.cli3}
+                                        placeholder="ABC"
+                                        onChange={(e) => setNewClient({ ...newClient, cli3: e.target.value.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 3) })}
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">Campo legado. O formato atual do SKU usa CAT3-CLI4-SEQ4; se vazio, o sistema mantém só para compatibilidade.</p>
+                                </div>
+                                <Cli4Field
+                                    value={newClient.cli4}
+                                    onChange={(v) => setNewClient({ ...newClient, cli4: v })}
+                                    nomeEmpresa={newClient.nome_empresa}
+                                />
+                                <div className="space-y-2">
+                                    <Label>Temperatura <span className="text-xs text-muted-foreground font-normal">(para qualificar)</span></Label>
