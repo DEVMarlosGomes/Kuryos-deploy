@@ -2924,18 +2924,23 @@ async def _bootstrap_pd_development_for_variacao(pd_request_id: str, card: dict,
         ref_frag = variacao.get("referencia_fragrancia") or "Fragrância da variação"
         pct = float(variacao.get("percentual_fragrancia") or 0)
         custo_kg = float(variacao.get("custo_fragrancia") or 0)
+        custo_currency = _normalize_currency_code(variacao.get("custo_fragrancia_currency"), "USD")
         cotacao = 6.00
-        cost_brl = round((pct / 100.0) * custo_kg, 4)
-        cost_kg_usd = round((custo_kg / cotacao) if cotacao else 0.0, 4)
+        price_usd = custo_kg if custo_currency == "USD" else None
+        price_per_kg = round(custo_kg * cotacao, 4) if price_usd is not None else custo_kg
+        cost_brl = round((pct / 100.0) * price_per_kg, 4)
+        cost_kg_usd = round(price_usd if price_usd is not None else ((price_per_kg / cotacao) if cotacao else 0.0), 4)
         item_id = _new_id()
         await db.pd_formula_items.insert_one({
             "id": item_id,
             "formula_id": formula_id,
             "ingredient_name": ref_frag,
             "percentage": pct,
-            "price_per_kg": custo_kg,
+            "price_per_kg": price_per_kg,
+            "price_usd": price_usd,
             "cost_brl": cost_brl,
             "cost_kg_usd": cost_kg_usd,
+            "cost_brl_via_cambio": cost_brl if price_usd is not None else None,
             "fornecedor": "",
             "phase": "Fragrância",
             "function": "Fragrância",
@@ -4142,7 +4147,13 @@ async def resolve_cat3_from_categoria(categoria: str, tenant_id: str) -> Optiona
     return None
 
 
-async def _check_sku_dependency_chain(sample: dict, tenant_id: str, variacao: Optional[dict] = None) -> str:
+async def _check_sku_dependency_chain(
+    sample: dict,
+    tenant_id: str,
+    variacao: Optional[dict] = None,
+    *,
+    fasttrack_variacao: bool = False,
+) -> str:
     """
     R25: Validate full dependency chain before generating SKU.
     Raises HTTPException 409 with the first missing prerequisite.
@@ -4171,10 +4182,13 @@ async def _check_sku_dependency_chain(sample: dict, tenant_id: str, variacao: Op
         raise HTTPException(status_code=409, detail=f"[R25] Categoria '{categoria}' não possui CAT3 ativo cadastrado — solicite a categoria antes de gerar o SKU")
 
     # 3. CGI assinado (contratos vinculados ao cliente/projeto)
-    cgi = await db.contratos.find_one(
-        {"tenant_id": tenant_id, "cliente_id": cliente_id, "status": {"$in": ["assinado", "vigente"]}},
-        {"_id": 0, "numero_contrato": 1},
-    )
+    if variacao is not None and fasttrack_variacao:
+        cgi = {"numero_contrato": "FASTTRACK"}
+    else:
+        cgi = await db.contratos.find_one(
+            {"tenant_id": tenant_id, "cliente_id": cliente_id, "status": {"$in": ["assinado", "vigente"]}},
+            {"_id": 0, "numero_contrato": 1},
+        )
     if not cgi:
         raise HTTPException(
             status_code=409,
@@ -4196,7 +4210,9 @@ async def _check_sku_dependency_chain(sample: dict, tenant_id: str, variacao: Op
 
     # 5. Pedido de Industrialização aprovado (pedido_aprovado stage on project)
     project = await db.crm_projects.find_one({"id": projeto_id, "tenant_id": tenant_id}, {"_id": 0})
-    if not project or project.get("stage") not in ("pedido_aprovado", "cliente_fechado"):
+    if not project:
+        raise HTTPException(status_code=409, detail="[R25] Projeto nÃ£o encontrado â€” prÃ©-requisito para geraÃ§Ã£o de SKU")
+    if not (variacao is not None and fasttrack_variacao) and project.get("stage") not in ("pedido_aprovado", "cliente_fechado"):
         proj_stage = (project or {}).get("stage", "não encontrado")
         raise HTTPException(
             status_code=409,
@@ -4295,7 +4311,7 @@ async def _create_sku_from_sample(sample: dict, user: dict) -> dict:
     return sku
 
 
-async def _create_sku_from_variacao_v2(sample: dict, variacao: dict, user: dict) -> dict:
+async def _create_sku_from_variacao_v2(sample: dict, variacao: dict, user: dict, *, fasttrack_variacao: bool = False) -> dict:
     """
     Geração de SKU no ponto real onde o cliente aprova (POST .../resultado-cliente) —
     formato novo [CAT3]-[CLI4]-[SEQ4] (R11), valida a cadeia R25 completa (agora
@@ -4308,7 +4324,12 @@ async def _create_sku_from_variacao_v2(sample: dict, variacao: dict, user: dict)
     tenant_id = sample["tenant_id"]
 
     try:
-        cat3 = await _check_sku_dependency_chain(sample, tenant_id, variacao=variacao)
+        cat3 = await _check_sku_dependency_chain(
+            sample,
+            tenant_id,
+            variacao=variacao,
+            fasttrack_variacao=fasttrack_variacao,
+        )
     except HTTPException as exc:
         logger.warning(f"SKU generation blocked for variação {variacao['id']}: {exc.detail}")
         return {"blocked": True, "reason": exc.detail}

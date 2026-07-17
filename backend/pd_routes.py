@@ -61,6 +61,17 @@ def now_iso():
     return now_iso_func()
 
 
+PD_KANBAN_TO_CRM_STATUS = {
+    "solicitado": "solicitada",
+    "em_desenvolvimento": "em_elaboracao",
+    "em_testes": None,
+    "aguardando_aprovacao": "enviada",
+    "retrabalho_interno": "retrabalho",
+    "aprovado": "aprovada",
+    "concluido": None,
+}
+
+
 def _validate_supplier_payload(payload: dict) -> dict:
     payload["razao_social"] = clean_text(payload.get("razao_social", ""))
     payload["nome_fantasia"] = clean_text(payload.get("nome_fantasia", ""))
@@ -213,17 +224,34 @@ async def _sync_request_status_to_pipeline(
         )
 
     if updated_card.get("amostra_variacao_id"):
+        crm_status = PD_KANBAN_TO_CRM_STATUS.get(kanban_status)
+        set_ops = {
+            "variacoes.$.status_pd_raw": kanban_status,
+            "variacoes.$.status_pd_label": PD_KANBAN_LABELS.get(kanban_status, kanban_status),
+            "updated_at": now,
+        }
+        if crm_status:
+            set_ops["variacoes.$.status"] = crm_status
+        if kanban_status == "aguardando_aprovacao":
+            set_ops["variacoes.$.aprovacao_interna"] = True
+            set_ops["variacoes.$.enviado_comercial_em"] = now
+            set_ops["data_envio"] = now
+            set_ops["aprovacao_interna"] = True
+        elif kanban_status == "aprovado":
+            set_ops["variacoes.$.resultado"] = "aprovada"
+            set_ops["variacoes.$.aprovacao_interna"] = True
+            set_ops["variacoes.$.aprovacao_externa"] = True
+            set_ops["variacoes.$.aprovado_cliente_em"] = now
+        elif kanban_status == "retrabalho_interno":
+            set_ops["variacoes.$.aprovacao_externa"] = False
+
         await db.crm_samples.update_one(
             {
                 "id": updated_card.get("amostra_id"),
                 "tenant_id": tenant_id,
                 "variacoes.id": updated_card["amostra_variacao_id"],
             },
-            {"$set": {
-                "variacoes.$.status_pd_raw": kanban_status,
-                "variacoes.$.status_pd_label": PD_KANBAN_LABELS.get(kanban_status, kanban_status),
-                "updated_at": now,
-            }}
+            {"$set": set_ops}
         )
         if _broadcast_event:
             await _broadcast_event(
@@ -753,6 +781,67 @@ def calc_item_costs(percentage: float, price_per_kg: float, cotacao_usd: float, 
     if price_usd is not None and cotacao_usd and cotacao_usd > 0 and percentage:
         cost_brl_via_cambio = round((percentage / 100.0) * price_usd * cotacao_usd, 4)
     return round(cost_brl, 4), round(cost_kg_usd, 4), cost_brl_via_cambio
+
+
+def _normalize_currency_code_local(value: Optional[str], default: str = "BRL") -> str:
+    code = str(value or default or "BRL").strip().upper()
+    return code if code in {"BRL", "USD"} else default
+
+
+async def _repair_prefilled_fragrance_item_from_variacao(
+    formula: dict,
+    item: dict,
+    variacao: Optional[dict],
+):
+    if not formula or not item or not variacao:
+        return item
+
+    if _normalize_currency_code_local(variacao.get("custo_fragrancia_currency"), "BRL") != "USD":
+        return item
+
+    frag_pct = float(variacao.get("percentual_fragrancia") or 0)
+    frag_cost_usd = float(variacao.get("custo_fragrancia") or 0)
+    item_pct = float(item.get("percentage") or 0)
+    ingredient_name = clean_text(item.get("ingredient_name", "")).lower()
+    ref_frag = clean_text(variacao.get("referencia_fragrancia", "")).lower()
+    phase = clean_text(item.get("phase", "")).lower()
+    function = clean_text(item.get("function", "")).lower()
+    is_fragrance_item = (
+        ("fragr" in ingredient_name)
+        or ("fragr" in phase)
+        or ("fragr" in function)
+        or (ref_frag and ingredient_name == ref_frag)
+    )
+
+    if not is_fragrance_item or frag_pct <= 0 or frag_cost_usd <= 0:
+        return item
+    if abs(item_pct - frag_pct) > 0.0001:
+        return item
+
+    cotacao = float(formula.get("cotacao_usd", 6.00) or 6.00)
+    price_per_kg = round(frag_cost_usd * cotacao, 4)
+    cost_brl, cost_kg_usd, cost_brl_via_cambio = calc_item_costs(
+        item_pct,
+        price_per_kg,
+        cotacao,
+        frag_cost_usd,
+    )
+
+    expected_fields = {
+        "price_per_kg": price_per_kg,
+        "price_usd": frag_cost_usd,
+        "cost_brl": cost_brl,
+        "cost_kg_usd": cost_kg_usd,
+        "cost_brl_via_cambio": cost_brl_via_cambio,
+    }
+    if all(item.get(field) == value for field, value in expected_fields.items()):
+        return item
+
+    await db.pd_formula_items.update_one(
+        {"id": item["id"]},
+        {"$set": expected_fields},
+    )
+    return {**item, **expected_fields}
 
 
 def _document_label(doc_type: str) -> str:
@@ -1449,6 +1538,90 @@ async def assert_d48h_stability_ok(pd_request_id: str, tenant_id: str):
         )
 
 
+async def _sync_linked_variacao_from_pd_approval(pd_req: dict, user: dict, new_status: str):
+    sample_id = pd_req.get("linked_amostra_id")
+    variacao_id = pd_req.get("linked_variacao_id")
+    if not sample_id or not variacao_id:
+        return None, None, None
+
+    sample = await db.crm_samples.find_one(
+        {"id": sample_id, "tenant_id": user["tenant_id"]},
+        {"_id": 0},
+    )
+    if not sample:
+        return None, None, None
+
+    variacao = next((v for v in sample.get("variacoes", []) if v.get("id") == variacao_id), None)
+    if not variacao:
+        return sample, None, None
+
+    now = now_iso()
+    set_ops = {
+        "variacoes.$.updated_at": now,
+        "variacoes.$.aprovacao_interna": True,
+    }
+
+    if new_status == "APPROVED":
+        set_ops.update({
+            "variacoes.$.status": "aprovada",
+            "variacoes.$.status_pd_raw": "aprovado",
+            "variacoes.$.status_pd_label": "Aprovado pelo Cliente",
+            "variacoes.$.resultado": "aprovada",
+            "variacoes.$.aprovacao_externa": True,
+            "variacoes.$.aprovado_cliente_em": now,
+            "variacoes.$.enviado_comercial_em": variacao.get("enviado_comercial_em") or now,
+            "data_envio": sample.get("data_envio") or now,
+            "aprovacao_interna": True,
+        })
+    elif new_status == "REJECTED":
+        set_ops.update({
+            "variacoes.$.status": "retrabalho",
+            "variacoes.$.status_pd_raw": "retrabalho_interno",
+            "variacoes.$.status_pd_label": "Retrabalho Solicitado",
+            "variacoes.$.resultado": "retrabalho",
+            "variacoes.$.aprovacao_externa": False,
+            "variacoes.$.reprovacao_motivo": "Reprovado comercialmente no P&D",
+        })
+    else:
+        return sample, variacao, None
+
+    await db.crm_samples.update_one(
+        {"id": sample_id, "tenant_id": user["tenant_id"], "variacoes.id": variacao_id},
+        {
+            "$set": set_ops,
+            "$push": {
+                "variacoes.$.historico_status": {
+                    "de": variacao.get("status", ""),
+                    "para": set_ops["variacoes.$.status"],
+                    "data": now,
+                    "usuario": user.get("name", ""),
+                    "usuario_id": user["id"],
+                    "origem": "pd_request_commercial_approval",
+                }
+            },
+        },
+    )
+
+    updated_sample = await db.crm_samples.find_one(
+        {"id": sample_id, "tenant_id": user["tenant_id"]},
+        {"_id": 0},
+    )
+    updated_variacao = next((v for v in (updated_sample or {}).get("variacoes", []) if v.get("id") == variacao_id), None)
+
+    sku_created = None
+    if new_status == "APPROVED" and updated_sample and updated_variacao:
+        from crm_routes import _create_sku_from_variacao_v2
+
+        sku_created = await _create_sku_from_variacao_v2(
+            updated_sample,
+            updated_variacao,
+            user,
+            fasttrack_variacao=True,
+        )
+
+    return updated_sample, updated_variacao, sku_created
+
+
 @pd_router.put("/requests/{req_id}/status")
 async def transition_status(req_id: str, data: StatusTransition, request: Request):
     user = await get_current_user(request)
@@ -1580,6 +1753,8 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
                         detail="Aprovação do cliente pendente. Registre a confirmação do cliente antes de marcar como APROVADO.",
                     )
     
+    sku_created = None
+
     await db.pd_requests.update_one(
         {"id": req_id},
         {"$set": {"status": new_status, "updated_at": now_iso()}}
@@ -1596,6 +1771,16 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
         )
     except Exception as exc:
         logger.warning(f"PD→CRM reverse sync failed for req {req_id}: {exc}")
+
+    if is_comercial_action:
+        try:
+            _updated_sample, _updated_variacao, sku_created = await _sync_linked_variacao_from_pd_approval(
+                pd_req,
+                user,
+                new_status,
+            )
+        except Exception as exc:
+            logger.warning(f"PD commercial approval reverse sync failed for req {req_id}: {exc}")
 
     await db.pd_request_status_history.insert_one({
         "id": new_id(),
@@ -1641,6 +1826,8 @@ async def transition_status(req_id: str, data: StatusTransition, request: Reques
             logger.error(f"Failed to auto-create order for PD {req_id}: {exc}")
     
     updated = await db.pd_requests.find_one({"id": req_id}, {"_id": 0})
+    if sku_created is not None:
+        updated["sku_created"] = sku_created
     return updated
 
 @pd_router.get("/requests/{req_id}/history")
@@ -3591,11 +3778,31 @@ async def get_pd_full_detail(req_id: str, request: Request):
     formula_cost_data = None
     cost_versions = None
     lab_results_doc = None
+    linked_sample = None
+    linked_variacao = None
+
+    if pd_req.get("linked_amostra_id"):
+        linked_sample = await db.crm_samples.find_one(
+            {"id": pd_req["linked_amostra_id"], "tenant_id": user["tenant_id"]},
+            {"_id": 0},
+        )
+        if linked_sample and pd_req.get("linked_variacao_id"):
+            linked_variacao = next(
+                (v for v in linked_sample.get("variacoes", []) if v.get("id") == pd_req["linked_variacao_id"]),
+                None,
+            )
 
     if dev:
         formulas = await db.pd_formulas.find({"development_id": dev["id"]}, {"_id": 0}).sort("version", -1).to_list(100)
         for f in formulas:
             items = await db.pd_formula_items.find({"formula_id": f["id"]}, {"_id": 0}).to_list(200)
+            if linked_variacao:
+                repaired_items = []
+                for item in items:
+                    repaired_items.append(
+                        await _repair_prefilled_fragrance_item_from_variacao(f, item, linked_variacao)
+                    )
+                items = repaired_items
             total_cost = sum(it.get("cost_brl", 0) for it in items)
             for it in items:
                 it["cost_percentage"] = round((it.get("cost_brl", 0) / total_cost * 100), 2) if total_cost > 0 else 0
@@ -3656,13 +3863,13 @@ async def get_pd_full_detail(req_id: str, request: Request):
 
     # CRM v3 fallback: pd_request can come from a sample variation (linked_amostra_id)
     if not client_info and pd_req.get("linked_amostra_id"):
-        sample = await db.crm_samples.find_one(
+        sample = linked_sample or await db.crm_samples.find_one(
             {"id": pd_req["linked_amostra_id"], "tenant_id": user["tenant_id"]},
             {"_id": 0},
         )
         if sample:
-            variacao = None
-            if pd_req.get("linked_variacao_id"):
+            variacao = linked_variacao
+            if not variacao and pd_req.get("linked_variacao_id"):
                 variacao = next(
                     (v for v in sample.get("variacoes", []) if v.get("id") == pd_req["linked_variacao_id"]),
                     None,

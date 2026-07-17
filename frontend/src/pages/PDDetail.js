@@ -518,8 +518,16 @@ export default function PDDetail() {
       }
     }
     try {
-      await api.put(`/pd/requests/${id}/status`, { new_status: newStatus, is_backward: isBackward, comment: comment || undefined });
+      const response = await api.put(`/pd/requests/${id}/status`, { new_status: newStatus, is_backward: isBackward, comment: comment || undefined });
       toast.success(isBackward ? "Etapa retrocedida!" : "Status atualizado!");
+      const skuCreated = response?.data?.sku_created;
+      if (newStatus === "APPROVED" && skuCreated) {
+        if (skuCreated.blocked) {
+          toast.warning(skuCreated.reason || "SKU não pôde ser gerado.");
+        } else if (skuCreated.codigo_interno) {
+          toast.success(`SKU gerado: ${skuCreated.codigo_interno}`);
+        }
+      }
       fetchData();
     } catch (err) {
       toast.error(formatApiError(err) || "Erro ao alterar status");

@@ -137,6 +137,73 @@ def test_bootstrap_syncs_card_and_sample_to_development(monkeypatch):
     assert sample_update["variacoes.$.status_pd_label"] == "Em Desenvolvimento"
 
 
+def test_bootstrap_prefills_usd_fragrance_with_brl_conversion(monkeypatch):
+    sample_doc = {
+        "id": "sample-1",
+        "tenant_id": "tenant-1",
+        "nome_produto": "Base Teste",
+        "quantidade_por_variacao": 15,
+        "unidade_quantidade": "ml",
+        "variacoes": [
+            {
+                "id": "var-1",
+                "codigo": "2026-1001-A",
+                "descricao_aplicacao": "Versão A",
+                "percentual_fragrancia": 3.0,
+                "referencia_fragrancia": "FR-00001 - Citrus",
+                "custo_fragrancia": 10.0,
+                "custo_fragrancia_currency": "USD",
+            }
+        ],
+    }
+    card_doc = {
+        "id": "card-1",
+        "tenant_id": "tenant-1",
+        "status_pd": "solicitado",
+        "amostra_id": "sample-1",
+        "amostra_variacao_id": "var-1",
+    }
+
+    fake_db = SimpleNamespace(
+        crm_samples=TrackingCollection([sample_doc]),
+        pd_requests=TrackingCollection([{"id": "req-1", "tenant_id": "tenant-1", "status": "OPEN"}]),
+        pd_request_status_history=TrackingCollection(),
+        pd_developments=TrackingCollection(),
+        pd_formulas=TrackingCollection(),
+        pd_formula_items=TrackingCollection(),
+        pd_cards=TrackingCollection([card_doc]),
+    )
+    crm_routes.db = fake_db
+    crm_routes._broadcast_event = None
+
+    generated_ids = iter(["hist-1", "dev-1", "formula-1", "item-1"])
+    monkeypatch.setattr(crm_routes, "_new_id", lambda: next(generated_ids))
+    monkeypatch.setattr(crm_routes, "_now_iso", lambda: "2026-07-15T15:00:00+00:00")
+
+    async def fake_audit_log(**_kwargs):
+        return None
+
+    monkeypatch.setattr(crm_routes, "audit_log", fake_audit_log)
+
+    user = {"id": "user-1", "name": "Tester", "tenant_id": "tenant-1"}
+
+    asyncio.run(
+        crm_routes._bootstrap_pd_development_for_variacao(
+            pd_request_id="req-1",
+            card=dict(card_doc),
+            user=user,
+        )
+    )
+
+    fragrancia_item = fake_db.pd_formula_items.insert_calls[-1]
+    assert fragrancia_item["ingredient_name"] == "FR-00001 - Citrus"
+    assert fragrancia_item["price_usd"] == 10.0
+    assert fragrancia_item["price_per_kg"] == 60.0
+    assert fragrancia_item["cost_brl"] == 1.8
+    assert fragrancia_item["cost_kg_usd"] == 10.0
+    assert fragrancia_item["cost_brl_via_cambio"] == 1.8
+
+
 def test_save_lab_results_auto_moves_request_to_tests(monkeypatch):
     fake_db = SimpleNamespace(
         pd_developments=TrackingCollection(
@@ -259,6 +326,10 @@ def test_sync_request_status_to_pipeline_advances_linked_project(monkeypatch):
 
     assert updated["status_pd"] == "aguardando_aprovacao"
     assert fake_db.pd_cards.docs[0]["status_pd"] == "aguardando_aprovacao"
+    sample_set = fake_db.crm_samples.update_calls[-1][1]["$set"]
+    assert sample_set["variacoes.$.status"] == "enviada"
+    assert sample_set["variacoes.$.aprovacao_interna"] is True
+    assert sample_set["variacoes.$.enviado_comercial_em"] == "2026-07-17T20:00:00+00:00"
     assert advanced == [
         {
             "project_id": "proj-1",
@@ -354,3 +425,98 @@ def test_move_pd_card_advances_linked_project_to_development(monkeypatch):
             "user_id": "user-1",
         }
     ]
+
+
+def test_repair_prefilled_fragrance_item_from_variacao_updates_legacy_brl_value():
+    fake_db = SimpleNamespace(
+        pd_formula_items=TrackingCollection(
+            [
+                {
+                    "id": "item-1",
+                    "formula_id": "formula-1",
+                    "ingredient_name": "FR-00001 - Citrus",
+                    "percentage": 3.0,
+                    "price_per_kg": 10.0,
+                    "cost_brl": 0.3,
+                    "cost_kg_usd": 1.6667,
+                    "phase": "Fragrância",
+                    "function": "Fragrância",
+                }
+            ]
+        )
+    )
+    pd_routes.db = fake_db
+
+    repaired = asyncio.run(
+        pd_routes._repair_prefilled_fragrance_item_from_variacao(
+            {"id": "formula-1", "cotacao_usd": 6.0},
+            dict(fake_db.pd_formula_items.docs[0]),
+            {
+                "percentual_fragrancia": 3.0,
+                "referencia_fragrancia": "FR-00001 - Citrus",
+                "custo_fragrancia": 10.0,
+                "custo_fragrancia_currency": "USD",
+            },
+        )
+    )
+
+    assert repaired["price_usd"] == 10.0
+    assert repaired["price_per_kg"] == 60.0
+    assert repaired["cost_brl"] == 1.8
+    assert repaired["cost_kg_usd"] == 10.0
+    assert repaired["cost_brl_via_cambio"] == 1.8
+    assert fake_db.pd_formula_items.update_calls[-1][1]["$set"]["price_usd"] == 10.0
+
+
+def test_sync_linked_variacao_from_pd_approval_generates_fasttrack_sku(monkeypatch):
+    fake_db = SimpleNamespace(
+        crm_samples=TrackingCollection(
+            [
+                {
+                    "id": "sample-1",
+                    "tenant_id": "tenant-1",
+                    "data_envio": None,
+                    "variacoes": [
+                        {
+                            "id": "var-1",
+                            "status": "enviada",
+                            "enviado_comercial_em": None,
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    pd_routes.db = fake_db
+
+    called = {}
+
+    async def fake_create_sku(sample, variacao, user, *, fasttrack_variacao=False):
+        called["sample_id"] = sample["id"]
+        called["variacao_id"] = variacao["id"]
+        called["fasttrack"] = fasttrack_variacao
+        return {"codigo_interno": "CAPA-TEST-0001"}
+
+    monkeypatch.setattr(pd_routes, "now_iso_func", lambda: "2026-07-17T21:00:00+00:00")
+    monkeypatch.setattr(crm_routes, "_create_sku_from_variacao_v2", fake_create_sku)
+
+    updated_sample, updated_variacao, sku_created = asyncio.run(
+        pd_routes._sync_linked_variacao_from_pd_approval(
+            {"linked_amostra_id": "sample-1", "linked_variacao_id": "var-1"},
+            {"id": "user-1", "name": "Tester", "tenant_id": "tenant-1"},
+            "APPROVED",
+        )
+    )
+
+    sample_set = fake_db.crm_samples.update_calls[-1][1]["$set"]
+    assert sample_set["variacoes.$.status"] == "aprovada"
+    assert sample_set["variacoes.$.resultado"] == "aprovada"
+    assert sample_set["variacoes.$.aprovacao_externa"] is True
+    assert updated_sample["id"] == "sample-1"
+    assert updated_variacao["id"] == "var-1"
+    assert sku_created["codigo_interno"] == "CAPA-TEST-0001"
+    assert called == {
+        "sample_id": "sample-1",
+        "variacao_id": "var-1",
+        "fasttrack": True,
+    }
